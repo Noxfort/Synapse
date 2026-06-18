@@ -1,0 +1,25 @@
+==================================================
+RELATÓRIO DE REQUISITOS DE HARDWARE - SYNAPSE CORE
+==================================================
+
+1. INFORMAÇÕES TÉCNICAS GERAIS
+--------------------------------------------------
+Sistema Operacional : Suporta Linux 6.17.0-35-generic (64bit) ou superior.
+Arquitetura         : Exige 64-bit obrigatoriamente.
+Conexão c/ Internet : Requer banda larga (Estimativa: 18 Mbps).
+Dependências        : Python 3.8+, bibliotecas do requirements.txt.
+
+2. MÉTRICAS BRUTAS OBTIDAS (TESTE COM 900 SENSORES MOCK)
+--------------------------------------------------
+- RAM Utilizada (S/ SO): 818.2 MB
+- VRAM (GPU) Utilizada: 876.0 MB
+- Uso Máximo de CPU (Threads): 177.1%
+
+3. REQUISITOS DE HARDWARE RECOMENDADOS (Porte: Grande (Múltiplas Rotas))
+--------------------------------------------------
+Processador (CPU)   : 6 Núcleos reais (ou threads lógicas)
+Memória (RAM)       : 8 GB (Já inclui folga e uso do sistema operacional)
+Armazenamento       : 32 GB (SSD Obrigatório para fluxo contínuo de sensores)
+Placa de Vídeo (GPU): Dedicada com 2 GB VRAM
+
+==================================================
