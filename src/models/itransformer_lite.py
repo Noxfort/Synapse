@@ -21,6 +21,10 @@
 import torch
 import torch.nn as nn
 
+# Enable Tensor Cores globally for matrix multiplications and cuDNN operations
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
 class iTransformerLite(nn.Module):
     """
     A static, lightweight adaptation of the iTransformer attention mechanism.

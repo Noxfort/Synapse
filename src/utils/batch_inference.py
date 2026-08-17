@@ -23,6 +23,7 @@ import gc
 import numpy as np
 import logging
 from typing import Optional, Callable
+from torch.amp import autocast
 
 # Configura o logger para este módulo
 logger = logging.getLogger(__name__)
@@ -35,20 +36,23 @@ class BatchInferenceEngine:
     - Execute ANY PyTorch model on ANY large dataset safely.
     - Encapsulates VRAM Management (CUDA Cache clearing).
     - Handles Data Slicing (Sliding Window) to prevent OOM errors.
+    - Accelerates inference via Automatic Mixed Precision (AMP).
     
     Usage:
     engine = BatchInferenceEngine(device, batch_size=256)
     result = engine.run(model, raw_data, seq_len=24)
     """
 
-    def __init__(self, device: torch.device, batch_size: int = 256):
+    def __init__(self, device: torch.device, batch_size: int = 256, use_amp: bool = True):
         """
         Args:
             device: The target torch device (CPU/CUDA).
             batch_size: Number of windows to process at once. Decrease if OOM persists.
+            use_amp: Whether to use Automatic Mixed Precision for Tensor Core acceleration.
         """
         self.device = device
         self.batch_size = batch_size
+        self.use_amp = use_amp
 
     def run(self, 
             model: torch.nn.Module, 
@@ -75,12 +79,13 @@ class BatchInferenceEngine:
             return np.zeros_like(data_matrix)
 
         reconstructed_list = []
+        device_type = self.device.type if self.device.type != 'mps' else 'cpu'
         
         # Prepare Model
         model.eval()
         model.to(self.device)
         
-        logger.info(f"[BatchEngine] Processing {num_samples} samples on {self.device} with batch_size {self.batch_size}...")
+        logger.info(f"[BatchEngine] Processing {num_samples} samples on {self.device} with batch_size {self.batch_size} (AMP={self.use_amp})...")
 
         # Disable Gradient Calculation to save memory
         with torch.no_grad():
@@ -104,9 +109,10 @@ class BatchInferenceEngine:
                 # Shape: (Batch, Seq_Len, Features)
                 tensor_batch = torch.tensor(np.array(batch_windows)).float().to(self.device)
                 
-                # 3. Inference
+                # 3. Inference with AMP
                 # Run the forward pass
-                recon_batch = model(tensor_batch)
+                with autocast(device_type=device_type, enabled=(self.use_amp and self.device.type == 'cuda')):
+                    recon_batch = model(tensor_batch)
                 
                 # 4. Extract Strategy (Last Point)
                 # Assuming output is (Batch, Seq, Feat), we take the last time step 
@@ -114,7 +120,7 @@ class BatchInferenceEngine:
                 last_point_recon = recon_batch[:, -1, :]
                 
                 # 5. Download to CPU & Store
-                reconstructed_list.append(last_point_recon.cpu().numpy())
+                reconstructed_list.append(last_point_recon.cpu().float().numpy())
                 
                 # 6. Immediate Cleanup
                 # Delete tensor references to allow PyTorch to reuse memory block

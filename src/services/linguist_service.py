@@ -66,10 +66,10 @@ class LinguistService(QObject):
         # Key: source_id, Value: attempt_count
         self.learning_attempts: Dict[str, int] = {}
         
-        # Thresholds
-        self.SAMPLE_CHUNK_SIZE = 60
-        self.MAX_ATTEMPTS = 5 # Allows up to 300 samples total
-        self.GRAMMAR_LOSS_THRESHOLD = 0.05 # MSE limit to consider "Learned"
+        # Thresholds (5 to 10 samples PINN validation)
+        self.SAMPLE_CHUNK_SIZE = 5
+        self.MAX_ATTEMPTS = 2  # Allows up to 10 samples total (attempt 1 at 5, attempt 2 at 10)
+        self.GRAMMAR_LOSS_THRESHOLD = 0.5  # PINN combined loss limit to consider "Learned"
 
     @pyqtSlot()
     def run_check(self):
@@ -87,33 +87,30 @@ class LinguistService(QObject):
 
     def _process_quarantine_source(self, source: DataSource, pipeline):
         """
-        Executes the logic: Collect -> Learn -> Validate -> Teach.
+        Executes the logic: Collect (5-10 samples) -> Learn (TCN-PINN) -> Validate Physics -> Teach.
         """
-        # 1. Check Data Availability
-        # We need at least 60 samples (or multiples thereof based on attempts)
-        required_samples = self.SAMPLE_CHUNK_SIZE
+        # 1. Check Data Availability (5 samples initially, 10 on retry)
+        current_attempt = self.learning_attempts.get(source.id, 0)
+        required_samples = self.SAMPLE_CHUNK_SIZE * (current_attempt + 1)
         
         if not pipeline.has_enough_data(source.id, required_samples):
-            return # Wait for ingestion
+            return  # Wait for ingestion buffer
 
         data_chunk = pipeline.get_quarantine_data(source.id)
-        current_attempt = self.learning_attempts.get(source.id, 0)
         
-        logger.info(f"[Linguist] 🔄 Attempt {current_attempt+1}: Analyzing {len(data_chunk)} samples from '{source.name}'...")
+        logger.info(f"[Linguist] 🔄 Attempt {current_attempt+1}: Analyzing {len(data_chunk)} samples from '{source.name}' with TCN-PINN...")
 
         # 2. Summon the Linguist Agent (The Learner)
-        # We verify if we can learn the "Grammar" of this signal
         linguist = self.agent_factory.get_or_create_linguist(source.id)
         
-        # Train on the current chunk
-        # Note: We assume the agent can handle the raw numerical data for this "signal grammar" task
+        # Train on the current chunk with PINN loss
         loss = linguist.train_step(data_chunk)
         
-        # 3. Decision Gate: Did we learn the grammar?
+        # 3. Decision Gate: Did we learn the signal grammar and physics?
         if loss < self.GRAMMAR_LOSS_THRESHOLD:
-            logger.info(f"[Linguist] 🧠 Grammar Learned! (Loss: {loss:.4f} < {self.GRAMMAR_LOSS_THRESHOLD})")
+            logger.info(f"[Linguist] 🧠 Signal Grammar & Dynamics Learned! (PINN Loss: {loss:.4f} < {self.GRAMMAR_LOSS_THRESHOLD})")
             
-            # 4. Physics Validation (The Symbolic Check)
+            # 4. Physics Validation (The Symbolic + PINN Check)
             if self._validate_physics(source, data_chunk, linguist):
                 # 5. Teach the Specialist (Knowledge Transfer)
                 self._teach_specialist(source, linguist)
@@ -121,8 +118,8 @@ class LinguistService(QObject):
                 # 6. Promote
                 self._promote_source(source, pipeline)
             else:
-                # Physics failed despite good grammar -> Probable Spoofing/Attack
-                self._reject_source(source, reason="Physics Violation (Possible Injection Attack)")
+                # Physics failed despite good grammar -> Probable Spoofing / Hallucination
+                self._reject_source(source, reason="Physics Violation / Hallucination Detected by PINN")
         
         else:
             # Grammar not learned yet
@@ -130,23 +127,21 @@ class LinguistService(QObject):
 
     def _handle_learning_failure(self, source: DataSource, pipeline, loss: float):
         """
-        Logic for when the agent fails to understand the signal pattern.
+        Logic for when the agent fails to understand the signal pattern or physics diverges.
         """
         attempts = self.learning_attempts.get(source.id, 0) + 1
         self.learning_attempts[source.id] = attempts
         
         if attempts >= self.MAX_ATTEMPTS:
-            logger.warning(f"[Linguist] ❌ Failed to learn grammar after {attempts} attempts. Signal too chaotic.")
-            self._reject_source(source, reason="Unlearnable Pattern (High Entropy)")
+            logger.warning(f"[Linguist] ❌ Failed to validate physics/grammar after 10 samples ({attempts} attempts). Signal rejected.")
+            self._reject_source(source, reason="Unlearnable / Non-Physical Pattern (High PINN Residual after 10 samples)")
         else:
-            logger.info(f"[Linguist] ⏳ Grammar unclear (Loss: {loss:.4f}). Requesting +{self.SAMPLE_CHUNK_SIZE} samples.")
-            # Signal the pipeline to keep buffering and NOT clear the quarantine buffer yet
-            # effectively "collecting more samples" for the next pass
+            logger.info(f"[Linguist] ⏳ Physics/Grammar calibrating (PINN Loss: {loss:.4f}). Requesting +{self.SAMPLE_CHUNK_SIZE} samples (up to 10).")
             pipeline.extend_quarantine_buffer(source.id, self.SAMPLE_CHUNK_SIZE)
 
     def _validate_physics(self, source: DataSource, data: List[float], agent: LinguistAgent) -> bool:
         """
-        Uses the trained Agent + Symbolic Rules to validate physical feasibility.
+        Uses the trained PINN Agent + Symbolic Rules to validate physical feasibility.
         """
         # A. Symbolic Sanity Checks (Rule-based)
         data_np = np.array(data)
@@ -158,12 +153,13 @@ class LinguistService(QObject):
              logger.warning(f"[Physics] Violation: Dead signal (Flatline).")
              return False
 
-        # B. Neuro-Validation (Anomaly Detection)
-        # We ask the agent to score the very data it just learned. 
-        # If it finds high anomaly scores within its own training set, the data is self-contradictory.
+        # B. Neuro-PINN Validation (Anomaly & Physics Residual Detection)
         analysis = agent.inference(data)
-        if analysis.get('is_anomaly', False):
-             logger.warning(f"[Physics] Violation: Semantic Inconsistency detected by TCN-AE.")
+        if analysis.get('is_anomaly', False) or analysis.get('physics_residual', 0.0) > 0.5:
+             logger.warning(
+                 f"[Physics/PINN] Violation: Semantic/Physical Inconsistency in '{source.name}' "
+                 f"(Physics Residual: {analysis.get('physics_residual', 0.0):.4f})."
+             )
              return False
              
         return True

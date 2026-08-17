@@ -15,6 +15,10 @@ class TensorBuilder:
     """
     Responsible for dynamically extracting and shaping Graph state features into PyTorch Tensors.
     Adheres to the Single Responsibility Principle (SRP) by isolating data casting from Business Logic.
+    
+    Refactored V3 (Diffusion & PINN Support):
+    - Extracts Observability Mask (M in {0, 1}^N) for dynamic anchor calibration.
+    - Extracts Global Velocity vectors for macroscopic boundary conditioning.
     """
     
     def __init__(self, device: torch.device, coordinator_model: Any, graph_manager: GraphManager):
@@ -42,17 +46,27 @@ class TensorBuilder:
             
         return expected_dim
 
-    def prepare_tensors(self, snapshot: Dict[str, Any]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def prepare_tensors(self, snapshot: Dict[str, Any]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Transforms raw node data into uniformly padded tensors safely.
+        Transforms raw node data into uniformly padded tensors, observability masks, and global velocities safely.
         """
         ordered_ids = self.graph_manager.get_ordered_node_ids()
         
         features_list = []
         history_list = []
+        mask_list = []
+        global_vel_list = []
         
         for nid in ordered_ids:
-            node_data = snapshot.get(nid)
+            node_data = snapshot.get(nid, {}) if snapshot else {}
+            
+            # Observability Mask (1.0 = Ground truth live sensor, 0.0 = Virtual/Synthesized node)
+            is_real = (node_data.get("type") == "real") or (node_data.get("status") == "Active")
+            mask_list.append(1.0 if is_real else 0.0)
+            
+            # Global Velocity for node
+            node_val = node_data.get("value", 0.0)
+            global_vel_list.append(float(node_val) if isinstance(node_val, (int, float)) else 0.0)
             
             # Spatial Embedding (X)
             final_emb = torch.zeros(self.expected_dim)
@@ -111,4 +125,7 @@ class TensorBuilder:
         x_temporal_np = np.stack(history_list).T 
         x_temporal = torch.from_numpy(x_temporal_np).float().to(self.device)
         
-        return x_spatial, edge_index, x_temporal
+        observability_mask = torch.tensor(mask_list, dtype=torch.float, device=self.device)
+        global_velocities = torch.tensor(global_vel_list, dtype=torch.float, device=self.device)
+        
+        return x_spatial, edge_index, x_temporal, observability_mask, global_velocities

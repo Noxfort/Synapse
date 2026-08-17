@@ -23,6 +23,7 @@ import torch.nn as nn
 import numpy as np
 import logging
 from typing import Any
+import optuna
 
 # Import PyG Data safely
 try:
@@ -35,6 +36,7 @@ except ImportError:
 from src.agents.coordinator_agent import CoordinatorAgent
 from src.agents.fuser_agent import FuserAgent
 from src.agents.specialist_agent import SpecialistAgent
+from src.utils.convergence_tracker import MarginalConvergenceTracker
 
 # Logger
 logger = logging.getLogger("Synapse.Strategies.Flow")
@@ -126,22 +128,29 @@ class FlowStrategies:
             logger.error(f"[Coordinator] Init Error: {e}")
             return float('inf')
 
-        # 4. Training Loop
+        # 4. Dynamic Training Loop (Marginal Convergence + Pruning)
         try:
-            total_loss = 0.0
-            steps = 5  # Fast epochs for HPO
+            tracker = MarginalConvergenceTracker(
+                min_epochs=3,
+                max_epochs=20,
+                patience=3,
+                min_delta=1e-4,
+                optuna_trial=trial
+            )
             
-            for _ in range(steps):
+            for epoch in range(tracker.max_epochs):
                 loss = agent.train_step(clean_data)
                 
                 if not np.isfinite(loss):
                     return float('inf')
                     
-                total_loss += loss
+                if tracker.step(epoch, loss, model=agent.model):
+                    break
             
-            avg_loss = total_loss / steps
-            return avg_loss
+            return tracker.best_loss
 
+        except optuna.TrialPruned:
+            raise
         except Exception as e:
             logger.warning(f"[Coordinator] Training failed: {e}")
             return float('inf')
@@ -153,7 +162,7 @@ class FlowStrategies:
     @staticmethod
     def fuser_strategy(trial, data: np.ndarray, device: torch.device) -> float:
         """
-        Optimizes the Fuser Agent (iTransformer).
+        Optimizes the Fuser Agent (iTransformer + PINN).
         """
         # 1. Hyperparameters
         lr = trial.suggest_float("lr", 1e-5, 1e-3, log=True)
@@ -186,27 +195,37 @@ class FlowStrategies:
         except Exception as e:
             return float('inf')
 
-        # 4. Training Loop
+        # 4. Dynamic Training Loop (Marginal Convergence + Pruning)
         try:
-            total_loss = 0.0
-            steps = 3
+            tracker = MarginalConvergenceTracker(
+                min_epochs=3,
+                max_epochs=20,
+                patience=3,
+                min_delta=1e-4,
+                optuna_trial=trial
+            )
             
-            for _ in range(steps):
-                # FIXED: Properly delegating to the agent's internal logic.
-                # Passing tuple (inputs, targets) to trigger shape locks correctly.
+            target_model = agent.itransformer if hasattr(agent, 'itransformer') else None
+            
+            for epoch in range(tracker.max_epochs):
                 loss = agent.train_step((input_seq, input_seq))
                 
                 if not np.isfinite(loss):
                     return float('inf')
                     
-                total_loss += loss
+                if tracker.step(epoch, loss, model=target_model):
+                    break
                 
-            return total_loss / steps
+            return tracker.best_loss
 
+        except optuna.TrialPruned:
+            raise
         except Exception as e:
             return float('inf')
         finally:
             del agent
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     @staticmethod
     def specialist_strategy(trial, data: np.ndarray, device: torch.device) -> float:
@@ -244,11 +263,29 @@ class FlowStrategies:
         else:
             return float('inf')
 
-        # 4. Train Step
+        # 4. Dynamic Training Loop (Marginal Convergence + Pruning)
         try:
-            loss = agent.train_step((x, y))
-            return loss if np.isfinite(loss) else float('inf')
+            tracker = MarginalConvergenceTracker(
+                min_epochs=3,
+                max_epochs=20,
+                patience=3,
+                min_delta=1e-4,
+                optuna_trial=trial
+            )
+            
+            for epoch in range(tracker.max_epochs):
+                loss = agent.train_step((x, y))
+                if not np.isfinite(loss):
+                    return float('inf')
+                if tracker.step(epoch, loss, model=agent.model):
+                    break
+                    
+            return tracker.best_loss
+        except optuna.TrialPruned:
+            raise
         except Exception as e:
             return float('inf')
         finally:
             del agent
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()

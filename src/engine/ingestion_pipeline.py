@@ -49,8 +49,8 @@ class IngestionPipeline:
         # Buffer for 'Quarantined' sources.
         self.quarantine_buffers: Dict[str, List[Any]] = {}
         
-        # Default sample size required for the Linguist to make a decision
-        self.default_quarantine_size = 60 
+        # Default sample size required for the Linguist to make a decision (5 to 10 samples)
+        self.default_quarantine_size = 5 
         
         # Dynamic limits per source (allows Linguist to request more data)
         self.custom_buffer_limits: Dict[str, int] = {}
@@ -102,12 +102,12 @@ class IngestionPipeline:
             
             count = len(self.quarantine_buffers[source.id])
             
-            # Determine dynamic limit (Default 60 or Custom if requested)
+            # Determine dynamic limit (Default 5 or Custom if requested, up to 10)
             base_size = self.custom_buffer_limits.get(source.id, self.default_quarantine_size)
             max_buffer = base_size * 2 
             
             # Log progress visually
-            if count % 10 == 0 or count == 1:
+            if count % 5 == 0 or count == 1:
                 logger.info(f"[Pipeline] 🧪 Collecting Raw Sample '{source.name}': {count}/{base_size}")
 
             # Maintain FIFO buffer size

@@ -23,11 +23,13 @@ import torch.nn as nn
 import numpy as np
 import logging
 from typing import Any
+import optuna
 
 # Import Agents
 from src.agents.auditor_agent import AuditorAgent
 from src.agents.imputer_agent import ImputerAgent
 from src.agents.corrector_agent import CorrectorAgent
+from src.utils.convergence_tracker import MarginalConvergenceTracker
 
 # Logger
 logger = logging.getLogger("Synapse.Strategies.Quality")
@@ -41,8 +43,8 @@ class QualityStrategies:
     @staticmethod
     def auditor_strategy(trial, data: np.ndarray, device: torch.device) -> float:
         """
-        Optimizes the Auditor Agent (Wavelet AE).
-        Target: Minimize Reconstruction Loss + Compactness (One-Class).
+        Optimizes the Auditor Agent (Wavelet AE + PINN + OCC).
+        Target: Minimize Reconstruction Loss + Compactness (One-Class) + Physics.
         """
         # 1. Hyperparameters (Stabilized Range)
         lr = trial.suggest_float("lr", 1e-5, 1e-3, log=True) # Cap at 1e-3
@@ -85,24 +87,32 @@ class QualityStrategies:
             logger.error(f"[Auditor] Init Error: {e}")
             return float('inf')
 
-        # 4. Training Loop
+        # 4. Dynamic Training Loop (Marginal Convergence + Pruning)
         try:
-            total_loss = 0.0
-            steps = 5
+            tracker = MarginalConvergenceTracker(
+                min_epochs=3,
+                max_epochs=20,
+                patience=3,
+                min_delta=1e-4,
+                optuna_trial=trial
+            )
             
             # Use subset for HPO speed
             batch = x_tensor[:16] 
             
-            for _ in range(steps):
+            for epoch in range(tracker.max_epochs):
                 loss = agent.train_step(batch)
                 
                 if not np.isfinite(loss):
                     return float('inf')
                     
-                total_loss += loss
+                if tracker.step(epoch, loss, model=agent.model):
+                    break
             
-            return total_loss / steps
+            return tracker.best_loss
 
+        except optuna.TrialPruned:
+            raise
         except Exception as e:
             logger.warning(f"[Auditor] Training failed: {e}")
             return float('inf')
@@ -161,21 +171,29 @@ class QualityStrategies:
             logger.error(f"[Imputer] Init Error: {e}")
             return float('inf')
 
-        # 4. Training Loop
+        # 4. Dynamic Training Loop (Marginal Convergence + Pruning)
         try:
-            total_loss = 0.0
-            steps = 5
+            tracker = MarginalConvergenceTracker(
+                min_epochs=3,
+                max_epochs=20,
+                patience=3,
+                min_delta=1e-4,
+                optuna_trial=trial
+            )
             
-            for _ in range(steps):
+            for epoch in range(tracker.max_epochs):
                 loss = agent.train_step(x_tensor)
                 
                 if not np.isfinite(loss):
                     return float('inf')
                 
-                total_loss += loss
+                if tracker.step(epoch, loss, model=agent.model):
+                    break
             
-            return total_loss / steps
+            return tracker.best_loss
 
+        except optuna.TrialPruned:
+            raise
         except Exception as e:
             logger.warning(f"[Imputer] Training failed: {e}")
             return float('inf')
@@ -187,8 +205,8 @@ class QualityStrategies:
     @staticmethod
     def corrector_strategy(trial, data: np.ndarray, device: torch.device) -> float:
         """
-        Optimizes the Corrector Agent (VAE-TCN).
-        Target: Reconstruction Loss (MSE) + KLD.
+        Optimizes the Corrector Agent (VAE-TCN + PINN).
+        Target: Reconstruction Loss (MSE) + KLD + Physics.
         """
         # 1. Hyperparameters
         lr = trial.suggest_float("lr", 1e-4, 1e-3, log=True)
@@ -228,19 +246,27 @@ class QualityStrategies:
             logger.error(f"[Corrector] Init Error: {e}")
             return float('inf')
 
-        # 4. Training Loop
+        # 4. Dynamic Training Loop (Marginal Convergence + Pruning)
         try:
-            total_loss = 0.0
-            steps = 5
+            tracker = MarginalConvergenceTracker(
+                min_epochs=3,
+                max_epochs=20,
+                patience=3,
+                min_delta=1e-4,
+                optuna_trial=trial
+            )
             
-            for _ in range(steps):
+            for epoch in range(tracker.max_epochs):
                 loss = agent.train_step(x_tensor)
                 if not np.isfinite(loss):
                     return float('inf')
-                total_loss += loss
+                if tracker.step(epoch, loss, model=agent.model):
+                    break
                 
-            return total_loss / steps
+            return tracker.best_loss
 
+        except optuna.TrialPruned:
+            raise
         except Exception as e:
             logger.warning(f"[Corrector] Training failed: {e}")
             return float('inf')

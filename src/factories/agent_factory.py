@@ -16,11 +16,11 @@
 #
 # File: src/factories/agent_factory.py
 # Author: Gabriel Moraes
-# Date: 2026-02-16
+# Date: 2026-08-17
 
 from typing import Dict, Any, Optional
 
-# Import Agents
+# Domain Agent Types
 from src.agents.specialist_agent import SpecialistAgent
 from src.agents.coordinator_agent import CoordinatorAgent
 from src.agents.fuser_agent import FuserAgent
@@ -31,183 +31,152 @@ from src.agents.linguist_agent import LinguistAgent
 from src.agents.auditor_agent import AuditorAgent
 from src.agents.jurist_agent import JuristAgent
 
+# Dedicated Domain Factories (SOLID / OCP / DIP)
+from src.factories.agent_registry import AgentRegistry
+from src.factories.auditor_factory import AuditorFactory
+from src.factories.imputer_factory import ImputerFactory
+from src.factories.corrector_factory import CorrectorFactory
+from src.factories.specialist_factory import SpecialistFactory
+from src.factories.coordinator_factory import CoordinatorFactory
+from src.factories.linguist_factory import LinguistFactory
+from src.factories.jurist_factory import JuristFactory
+from src.factories.fuser_model_factory import FuserModelFactory
+from src.services.dynamic_sensor_calibrator import DynamicSensorCalibrator
+
+
 class AgentFactory:
     """
-    The Central Agent Fabricator & Registry.
+    The Central Agent Fabricator Facade & Abstract Dispatcher.
     
-    Refactored V5 (Jurist Integration):
-    - Now manages the JuristAgent (LLM) for XAI tasks.
-    - Provides a complete 'One-Stop-Shop' for all Neural Agents in SYNAPSE.
+    SOLID Architecture V7:
+    - SRP: Acts strictly as a creational dispatcher/facade delegating to specialized domain factories.
+    - OCP: Extensible via builder registry without modifying internal neural assembly.
+    - DIP: Delegates sensor instance lifecycle to the dedicated AgentRegistry.
     """
 
-    def __init__(self, config: Dict[str, Any] = None):
+    _domain_factories = {
+        "auditor": AuditorFactory,
+        "imputer": ImputerFactory,
+        "corrector": CorrectorFactory,
+        "specialist": SpecialistFactory,
+        "coordinator": CoordinatorFactory,
+        "linguist": LinguistFactory,
+        "jurist": JuristFactory,
+    }
+
+    def __init__(self, config: Optional[Dict[str, Any]] = None, registry: Optional[AgentRegistry] = None):
         """
         Args:
-            config: Global system configuration dict (usually loaded from yaml).
+            config: Global system configuration dict.
+            registry: Optional external AgentRegistry (DIP).
         """
         self.config = config or {}
-        
-        # Registry: { source_id: { 'specialist': ..., 'jurist': ..., etc } }
-        self.registry: Dict[str, Dict[str, Any]] = {}
+        self.registry = registry or AgentRegistry()
 
-    # --- Registry Management Methods (Stateful) ---
+    # --- Registry Delegations (Stateful / Lifecycle) ---
 
     def get_or_create_linguist(self, source_id: str) -> LinguistAgent:
-        """Retrieves/Creates LinguistAgent (The Gatekeeper)."""
-        agent = self._get_from_registry(source_id, 'linguist')
-        if agent: return agent
-            
-        p_ling = self.config.get('linguist', {})
-        new_agent = LinguistAgent(
-            model_name=p_ling.get('model_name', "distilroberta-base"),
-            learning_rate=p_ling.get('lr', 1e-4)
-        )
-        self._register(source_id, 'linguist', new_agent)
-        return new_agent
+        """Retrieves or creates LinguistAgent for a sensor source."""
+        agent = self.registry.get(source_id, 'linguist')
+        if agent is None:
+            agent = self.create_linguist(self.config)
+            self.registry.register(source_id, 'linguist', agent)
+        return agent
 
     def get_or_create_specialist(self, source_id: str) -> SpecialistAgent:
-        """Retrieves/Creates SpecialistAgent (The Operational Model)."""
-        agent = self._get_from_registry(source_id, 'specialist')
-        if agent: return agent
-            
-        p_spec = self.config.get('specialist', {})
-        input_dim = p_spec.get('input_dim', 1) 
-        output_dim = p_spec.get('output_dim', 1)
-        
-        new_agent = self.create_specialist(self.config, input_dim, output_dim)
-        self._register(source_id, 'specialist', new_agent)
-        return new_agent
+        """Retrieves or creates SpecialistAgent for a sensor source."""
+        agent = self.registry.get(source_id, 'specialist')
+        if agent is None:
+            p_spec = self.config.get('specialist', {})
+            input_dim = p_spec.get('input_dim', 1)
+            output_dim = p_spec.get('output_dim', 1)
+            agent = self.create_specialist(self.config, input_dim=input_dim, output_dim=output_dim)
+            self.registry.register(source_id, 'specialist', agent)
+        return agent
 
     def get_or_create_auditor(self, source_id: str) -> AuditorAgent:
-        """Retrieves/Creates AuditorAgent (The Security Guard)."""
-        agent = self._get_from_registry(source_id, 'auditor')
-        if agent: return agent
-
-        p_aud = self.config.get('auditor', {})
-        input_len = p_aud.get('input_len', 60)
-
-        new_agent = self.create_auditor(self.config, input_len)
-        self._register(source_id, 'auditor', new_agent)
-        return new_agent
+        """Retrieves or creates AuditorAgent for a sensor source."""
+        agent = self.registry.get(source_id, 'auditor')
+        if agent is None:
+            p_aud = self.config.get('auditor', {})
+            input_len = p_aud.get('input_len', 60)
+            agent = self.create_auditor(self.config, input_len=input_len)
+            self.registry.register(source_id, 'auditor', agent)
+        return agent
 
     def get_or_create_jurist(self, source_id: str) -> JuristAgent:
-        """
-        Retrieves/Creates JuristAgent (The Judge/Explainer).
-        Note: The Jurist is usually global, but we register per source 
-        if we want isolated contexts or to follow the pattern. 
-        For now, we create a new instance (the agent handles its own VRAM loading).
-        """
-        agent = self._get_from_registry(source_id, 'jurist')
-        if agent: return agent
+        """Retrieves or creates JuristAgent for a sensor source."""
+        agent = self.registry.get(source_id, 'jurist')
+        if agent is None:
+            agent = self.create_jurist(self.config)
+            self.registry.register(source_id, 'jurist', agent)
+        return agent
 
-        new_agent = self.create_jurist(self.config)
-        self._register(source_id, 'jurist', new_agent)
-        return new_agent
+    # --- Static Creational Dispatchers (Stateless) ---
 
-    def _get_from_registry(self, source_id: str, agent_type: str) -> Optional[Any]:
-        if source_id in self.registry:
-            return self.registry[source_id].get(agent_type)
-        return None
-
-    def _register(self, source_id: str, agent_type: str, agent: Any):
-        if source_id not in self.registry:
-            self.registry[source_id] = {}
-        self.registry[source_id][agent_type] = agent
-
-    # --- Static Builders (Stateless) ---
+    @classmethod
+    def create(cls, agent_type: str, config: Optional[Dict[str, Any]] = None, **kwargs: Any) -> Any:
+        """Generic Creational Dispatcher (OCP)."""
+        factory = cls._domain_factories.get(agent_type.lower())
+        if factory:
+            return factory.create(config=config, **kwargs)
+        if agent_type.lower() == "fuser":
+            return cls.create_fuser(config or {}, **kwargs)
+        raise ValueError(f"[AgentFactory] Unknown agent type: '{agent_type}'")
 
     @staticmethod
-    def create_specialist(config: Dict[str, Any], input_dim: int, output_dim: int) -> SpecialistAgent:
-        p_spec = config.get('specialist', {})
-        num_channels = [16, 32]
-        kernel_size = 2
-        
-        if p_spec:
-            if 'num_levels' in p_spec and 'base_channel' in p_spec:
-                num_channels = [p_spec['base_channel']] * p_spec['num_levels']
-            kernel_size = p_spec.get('kernel_size', kernel_size)
-            
-        return SpecialistAgent(
-            input_dim=input_dim,
-            output_dim=output_dim,
-            num_channels=num_channels,
-            kernel_size=kernel_size,
-            dropout=p_spec.get('dropout', 0.2),
-            learning_rate=p_spec.get('lr', 0.001)
-        )
+    def create_specialist(config: Dict[str, Any], input_dim: int = 1, output_dim: int = 32, **kwargs: Any) -> SpecialistAgent:
+        return SpecialistFactory.create(config=config, input_dim=input_dim, output_dim=output_dim, **kwargs)
 
     @staticmethod
-    def create_auditor(config: Dict[str, Any], input_len: int) -> AuditorAgent:
-        p_aud = config.get('auditor', {})
-        return AuditorAgent(
-            input_len=input_len,
-            J=p_aud.get('J', 2),
-            Q=p_aud.get('Q', 1),
-            latent_dim=p_aud.get('latent_dim', 16),
-            learning_rate=p_aud.get('lr', 1e-3)
-        )
+    def create_auditor(config: Dict[str, Any], input_len: int = 60, **kwargs: Any) -> AuditorAgent:
+        return AuditorFactory.create(config=config, input_len=input_len, **kwargs)
 
     @staticmethod
-    def create_jurist(config: Dict[str, Any]) -> JuristAgent:
-        """
-        Creates a Jurist Agent (LLM Wrapper).
-        """
-        p_jurist = config.get('jurist', {})
-        model_id = p_jurist.get('model_id', "Qwen/Qwen2.5-1.5B-Instruct")
-        
-        return JuristAgent(
-            model_id=model_id
-        )
+    def create_imputer(config: Dict[str, Any], feature_dim: int = 4, **kwargs: Any) -> ImputerAgent:
+        return ImputerFactory.create(config=config, feature_dim=feature_dim, **kwargs)
 
     @staticmethod
-    def create_coordinator(config: Dict[str, Any], input_dim: int, hidden_dim: int, output_dim: int) -> CoordinatorAgent:
-        p_coord = config.get('coordinator', {})
-        return CoordinatorAgent(
-            in_channels=input_dim,
-            hidden_channels=p_coord.get('hidden_channels', hidden_dim),
-            out_channels=output_dim,
-            heads=p_coord.get('heads', 4),
-            dropout=p_coord.get('dropout', 0.6),
-            learning_rate=p_coord.get('lr', 0.005)
-        )
+    def create_corrector(config: Dict[str, Any], input_dim: int = 1, **kwargs: Any) -> CorrectorAgent:
+        return CorrectorFactory.create(config=config, input_dim=input_dim, **kwargs)
 
     @staticmethod
-    def create_fuser(config: Dict[str, Any], num_variates: int, seq_len: int, pred_len: int) -> FuserAgent:
+    def create_coordinator(config: Dict[str, Any], input_dim: int = 32, hidden_dim: int = 32, output_dim: int = 32, **kwargs: Any) -> CoordinatorAgent:
+        return CoordinatorFactory.create(config=config, input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim, **kwargs)
+
+    @staticmethod
+    def create_linguist(config: Dict[str, Any], **kwargs: Any) -> LinguistAgent:
+        return LinguistFactory.create(config=config, **kwargs)
+
+    @staticmethod
+    def create_jurist(config: Dict[str, Any], **kwargs: Any) -> JuristAgent:
+        return JuristFactory.create(config=config, **kwargs)
+
+    @staticmethod
+    def create_fuser(config: Dict[str, Any], num_variates: int = 10, seq_len: int = 60, pred_len: int = 1, **kwargs: Any) -> FuserAgent:
         p_fuser = config.get('fuser', {})
-        return FuserAgent(
+        d_model = p_fuser.get('d_model', 512)
+        n_heads = p_fuser.get('n_heads', 8)
+        layers = p_fuser.get('layers', 2)
+        spatial_dim = p_fuser.get('spatial_dim', 32)
+
+        pipeline = FuserModelFactory.create_fusion_pipeline(
             num_variates=num_variates,
             seq_len=seq_len,
             pred_len=pred_len,
-            d_model=p_fuser.get('d_model', 512),
-            n_heads=p_fuser.get('n_heads', 8),
-            layers=p_fuser.get('layers', 2),
-            learning_rate=p_fuser.get('lr', 0.0001)
+            d_model=d_model,
+            n_heads=n_heads,
+            layers=layers,
+            spatial_dim=spatial_dim
         )
+        calibrator = DynamicSensorCalibrator(num_variates=num_variates)
 
-    @staticmethod
-    def create_imputer(config: Dict[str, Any], feature_dim: int) -> ImputerAgent:
-        p_imp = config.get('imputer', {})
-        return ImputerAgent(
-            feature_dim=feature_dim,
-            seq_len=p_imp.get('seq_len', 24),
-            patch_len=p_imp.get('patch_len', 8),
-            stride=p_imp.get('stride', 4),
-            d_model=p_imp.get('d_model', 64),
-            n_heads=p_imp.get('n_heads', 4),
-            n_layers=p_imp.get('n_layers', 2),
-            dropout=p_imp.get('dropout', 0.1),
-            learning_rate=p_imp.get('lr', 0.001)
-        )
-
-    @staticmethod
-    def create_corrector(config: Dict[str, Any], input_dim: int) -> CorrectorAgent:
-        p_corr = config.get('corrector', {})
-        return CorrectorAgent(
-            input_dim=input_dim,
-            hidden_dim=p_corr.get('hidden_dim', 64),
-            latent_dim=p_corr.get('latent_dim', 16),
-            kernel_size=p_corr.get('kernel_size', 3),
-            learning_rate=p_corr.get('lr', 0.001)
+        return FuserAgent(
+            pipeline=pipeline,
+            calibrator=calibrator,
+            num_variates=num_variates,
+            seq_len=seq_len,
+            pred_len=pred_len
         )
 
     @staticmethod

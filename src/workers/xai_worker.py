@@ -177,7 +177,11 @@ class _XAITask(QThread):
         return self._fuser_wrapper
 
     def _auditor_loss_wrapper(self, inputs):
-        reconstructed = self.shadow_auditor.model(inputs)
+        res = self.shadow_auditor.model(inputs)
+        if isinstance(res, tuple):
+            reconstructed = res[3] if len(res) >= 4 else res[0]
+        else:
+            reconstructed = res
         squared_diff = (inputs - reconstructed) ** 2
         return torch.sum(squared_diff, dim=1).unsqueeze(1)
 

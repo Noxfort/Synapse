@@ -201,7 +201,7 @@ class SourceListDock(QDockWidget):
                 self.add_button.setStyleSheet("font-weight: bold; color: #FFA500;")
             elif self._current_phase == ButtonPhase.PHASE_DB:
                 self.add_button.setText(self.tr("+ Add Database"))
-                self.add_button.setToolTip(self.tr("Step 2: Import Historical Data."))
+                self.add_button.setToolTip(self.tr("Step 2: Import Historical Data (.parquet)."))
                 self.add_button.setStyleSheet("font-weight: bold; color: #FFA500;")
             elif self._current_phase == ButtonPhase.PHASE_READY:
                 self.add_button.setText(self.tr("+ Add Data Source"))

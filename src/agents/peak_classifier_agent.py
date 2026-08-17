@@ -22,7 +22,7 @@ import logging
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.amp import autocast
+from torch.amp import autocast, GradScaler
 
 # SYNAPSE Local Models
 from src.models.itransformer_lite import iTransformerLite
@@ -76,6 +76,7 @@ class PeakClassifierAgent(nn.Module):
             {'params': self.timesnet.parameters()},
             {'params': self.hpo_classifier.parameters()}
         ], lr=timesnet_config.get('learning_rate', 1e-3))
+        self.scaler = GradScaler('cuda' if torch.cuda.is_available() else 'cpu')
 
         # --- Services (SRP) ---
         self._column_discovery = ColumnDiscovery()
@@ -88,7 +89,7 @@ class PeakClassifierAgent(nn.Module):
 
     def train_step(self, x_windows: np.ndarray, y_labels: np.ndarray) -> float:
         """
-        Forward/backward pass for HPO Hyperparameter Tuning.
+        Forward/backward pass for HPO Hyperparameter Tuning with AMP.
         """
         self.train()
         
@@ -99,19 +100,27 @@ class PeakClassifierAgent(nn.Module):
             x_tensor = x_tensor.unsqueeze(-1).expand(-1, -1, 2)
             
         self.optimizer.zero_grad()
+        device_type = self.device.type if self.device.type != 'mps' else 'cpu'
         
-        with torch.no_grad():
-            stress_signal = self.itransformer(x_tensor)
+        with autocast(device_type=device_type, enabled=(self.device.type == 'cuda')):
+            with torch.no_grad():
+                stress_signal = self.itransformer(x_tensor)
+                
+            timesnet_features = self.timesnet(stress_signal)
+            pooled_features = timesnet_features.mean(dim=1)
             
-        timesnet_features = self.timesnet(stress_signal)
-        pooled_features = timesnet_features.mean(dim=1)
+            logits = self.hpo_classifier(pooled_features)
+            loss = self.criterion(logits, y_tensor)
         
-        logits = self.hpo_classifier(pooled_features)
-        loss = self.criterion(logits, y_tensor)
-        
-        loss.backward()
+        if not torch.isfinite(loss):
+            self.scaler.update()
+            return 1e6
+            
+        self.scaler.scale(loss).backward()
+        self.scaler.unscale_(self.optimizer)
         torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
-        self.optimizer.step()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
         
         return loss.item()
 

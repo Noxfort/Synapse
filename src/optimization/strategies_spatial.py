@@ -45,6 +45,7 @@ except ImportError:
 from src.models.sinkhorn_cross_attention import SinkhornCrossAttention
 from src.services.line_graph_builder import LineGraphBuilder
 from src.domain.entities import MapEdge, MapNode
+from src.utils.convergence_tracker import MarginalConvergenceTracker
 
 logger = logging.getLogger("Synapse.Strategies.Spatial")
 
@@ -57,21 +58,23 @@ class SpatialStrategies:
         trial,
         graph_data: Any,
         device: torch.device,
-        n_epochs: int = 30,
+        max_epochs: int = 50,
+        min_epochs: int = 4,
         n_subgraphs_per_epoch: int = 10,
     ) -> float:
         """
-        Optuna trial for the SinkhornCrossAttention model.
+        Optuna trial for the SinkhornCrossAttention model with Dynamic Marginal Convergence.
 
         Args:
             trial: Optuna trial object.
             graph_data: Dict with 'edges' (List[MapEdge]) and 'nodes' (List[MapNode]).
             device: Torch device.
-            n_epochs: Training epochs per trial.
+            max_epochs: Max safety epochs per trial.
+            min_epochs: Min warm-up epochs.
             n_subgraphs_per_epoch: Random subgraphs per epoch.
 
         Returns:
-            Final mean loss (lower is better).
+            Final best loss (lower is better).
         """
         if not PYG_AVAILABLE:
             logger.error("[Spatial] PyTorch Geometric not available.")
@@ -114,88 +117,101 @@ class SpatialStrategies:
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         scaler = GradScaler(device=str(device))
 
-        # ── Training Loop ──
-        epoch_losses: List[float] = []
-
-        for epoch in range(n_epochs):
-            model.train()
-            batch_losses: List[float] = []
-
-            for _ in range(n_subgraphs_per_epoch):
-                try:
-                    # 1. Random Sub-Graph
-                    sub_edges, sub_nodes = SpatialStrategies._random_subgraph(
-                        edges, nodes, min_edges=5, max_edges=30
-                    )
-                    if len(sub_edges) < 3:
-                        continue
-
-                    # 2. Build Source Line Graph
-                    source = LineGraphBuilder.build_from_edges(sub_edges, sub_nodes)
-                    if source is None:
-                        continue
-
-                    # 3. Mutant
-                    mut_edges, perm = SpatialStrategies._create_mutation(
-                        sub_edges, noise_scale=noise_scale
-                    )
-                    mutant = LineGraphBuilder.build_from_edges(mut_edges, sub_nodes)
-                    if mutant is None:
-                        continue
-
-                    # 4. Ground Truth Permutation Matrix
-                    n_s, n_m = source.num_nodes, mutant.num_nodes
-                    gt = torch.zeros(n_s, n_m)
-                    for src_idx, mut_idx in enumerate(perm):
-                        if src_idx < n_s and mut_idx < n_m:
-                            gt[src_idx, mut_idx] = 1.0
-
-                    source = source.to(device)
-                    mutant = mutant.to(device)
-                    gt = gt.to(device)
-
-                    # 5. Forward + Loss
-                    optimizer.zero_grad()
-                    with autocast(device_type=device.type, enabled=(device.type == 'cuda')):
-                        predicted = model(source, mutant)
-                        loss = SinkhornCrossAttention.alignment_loss(predicted, gt)
-
-                    scaler.scale(loss).backward()
-                    scaler.step(optimizer)
-                    scaler.update()
-
-                    batch_losses.append(loss.item())
-
-                except Exception as e:
-                    logger.debug(f"[Spatial] Subgraph error: {e}")
-                    continue
-
-            if batch_losses:
-                mean_loss = sum(batch_losses) / len(batch_losses)
-                epoch_losses.append(mean_loss)
-
-                trial.report(mean_loss, epoch)
-                if trial.should_prune():
-                    import optuna
-                    raise optuna.TrialPruned()
-
-                if epoch % 10 == 0:
-                    logger.info(
-                        f"[Spatial] Trial {trial.number} | "
-                        f"Epoch {epoch}/{n_epochs} | Loss: {mean_loss:.4f}"
-                    )
-
-        if not epoch_losses:
-            return float('inf')
-
-        final_loss = sum(epoch_losses[-5:]) / len(epoch_losses[-5:])
-
-        logger.info(
-            f"[Spatial] Trial {trial.number} finished with value: {final_loss:.6f} "
-            f"and parameters: {trial.params}"
+        # ── Dynamic Training Loop ──
+        tracker = MarginalConvergenceTracker(
+            min_epochs=min_epochs,
+            max_epochs=max_epochs,
+            patience=3,
+            min_delta=1e-4,
+            optuna_trial=trial
         )
 
-        return final_loss
+        try:
+            for epoch in range(tracker.max_epochs):
+                model.train()
+                batch_losses: List[float] = []
+
+                for _ in range(n_subgraphs_per_epoch):
+                    try:
+                        # 1. Random Sub-Graph
+                        sub_edges, sub_nodes = SpatialStrategies._random_subgraph(
+                            edges, nodes, min_edges=5, max_edges=30
+                        )
+                        if len(sub_edges) < 3:
+                            continue
+
+                        # 2. Build Source Line Graph
+                        source = LineGraphBuilder.build_from_edges(sub_edges, sub_nodes)
+                        if source is None:
+                            continue
+
+                        # 3. Mutant
+                        mut_edges, perm = SpatialStrategies._create_mutation(
+                            sub_edges, noise_scale=noise_scale
+                        )
+                        mutant = LineGraphBuilder.build_from_edges(mut_edges, sub_nodes)
+                        if mutant is None:
+                            continue
+
+                        # 4. Ground Truth Permutation Matrix
+                        n_s, n_m = source.num_nodes, mutant.num_nodes
+                        gt = torch.zeros(n_s, n_m)
+                        for src_idx, mut_idx in enumerate(perm):
+                            if src_idx < n_s and mut_idx < n_m:
+                                gt[src_idx, mut_idx] = 1.0
+
+                        source = source.to(device)
+                        mutant = mutant.to(device)
+                        gt = gt.to(device)
+
+                        # 5. Forward + Loss
+                        optimizer.zero_grad()
+                        with autocast(device_type=device.type, enabled=(device.type == 'cuda')):
+                            predicted = model(source, mutant)
+                            loss = SinkhornCrossAttention.alignment_loss(predicted, gt)
+
+                        scaler.scale(loss).backward()
+                        scaler.step(optimizer)
+                        scaler.update()
+
+                        batch_losses.append(loss.item())
+
+                    except Exception as e:
+                        logger.debug(f"[Spatial] Subgraph error: {e}")
+                        continue
+
+                if batch_losses:
+                    mean_loss = sum(batch_losses) / len(batch_losses)
+                    
+                    if epoch % 10 == 0:
+                        logger.info(
+                            f"[Spatial] Trial {trial.number} | "
+                            f"Epoch {epoch+1} | Loss: {mean_loss:.4f}"
+                        )
+
+                    if tracker.step(epoch, mean_loss, model=model):
+                        break
+
+            if not tracker.loss_history:
+                return float('inf')
+
+            logger.info(
+                f"[Spatial] Trial {trial.number} finished with value: {tracker.best_loss:.6f} "
+                f"at epoch {tracker.best_epoch+1} and parameters: {trial.params}"
+            )
+
+            return tracker.best_loss
+
+        except Exception as e:
+            # Check if it was optuna TrialPruned
+            if hasattr(e, '__class__') and e.__class__.__name__ == 'TrialPruned':
+                raise
+            logger.warning(f"[Spatial] Trial failed: {e}")
+            return float('inf')
+        finally:
+            del model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     # ─── Synthetic Data ───────────────────────────────────────────────────
 

@@ -557,6 +557,11 @@ Certifique-se de que o payload inclui o ID da Fonte.</translation>
       <source>&amp;View</source>
       <translation>&amp;Exibir</translation>
     </message>
+    <message>
+      <location filename="../components/main_menu.py" line="73" />
+      <source>Toggle &amp;Full Screen</source>
+      <translation>Alternar &amp;Tela Cheia</translation>
+    </message>
   </context>
   <context>
     <name>MainWindow</name>

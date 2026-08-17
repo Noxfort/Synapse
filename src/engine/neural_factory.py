@@ -55,6 +55,10 @@ class NeuralFactory:
         """
         if torch.cuda.is_available():
             self.logger.info(f"Neural Factory: CUDA detected. Using {torch.cuda.get_device_name(0)}")
+            # Enable Tensor Cores (TF32) globally for maximum throughput on Ampere+ GPUs
+            torch.set_float32_matmul_precision('high')
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
             return torch.device("cuda")
         elif torch.backends.mps.is_available():
             self.logger.info("Neural Factory: Apple MPS detected.")

@@ -19,7 +19,8 @@
 # Date: 2026-03-01
 
 from PyQt6.QtWidgets import QMenuBar, QMenu
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QAction, QKeySequence
+from PyQt6.QtCore import Qt
 
 class MainMenu(QMenuBar):
     """
@@ -53,6 +54,11 @@ class MainMenu(QMenuBar):
 
         # --- View Menu ---
         self.view_menu = self.addMenu("")
+        
+        self.toggle_fullscreen_act = QAction("", self)
+        self.toggle_fullscreen_act.setShortcut(QKeySequence(Qt.Key.Key_F11))
+        self.view_menu.addAction(self.toggle_fullscreen_act)
+        self.view_menu.addSeparator()
 
     def add_view_action(self, action: QAction):
         """
@@ -65,8 +71,9 @@ class MainMenu(QMenuBar):
         """Updates the menu titles and actions when the language changes."""
         self.file_menu.setTitle(self.tr("&File"))
         self.open_net_act.setText(self.tr("Open SUMO Network..."))
-        self.import_db_act.setText(self.tr("Import Raw Data (.db)..."))
+        self.import_db_act.setText(self.tr("Import Historical Data (.parquet)..."))
         self.settings_act.setText(self.tr("Settings..."))
         self.exit_act.setText(self.tr("Exit"))
         
         self.view_menu.setTitle(self.tr("&View"))
+        self.toggle_fullscreen_act.setText(self.tr("Toggle &Full Screen"))

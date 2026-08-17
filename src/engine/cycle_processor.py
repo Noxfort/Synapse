@@ -85,7 +85,12 @@ class CycleProcessor:
         
         # 1. Prepare Tensors (Delegated to TensorBuilder - SRP)
         try:
-            x_spatial, edge_index, x_temporal = self.tensor_builder.prepare_tensors(snapshot)
+            tensor_pack = self.tensor_builder.prepare_tensors(snapshot)
+            if len(tensor_pack) == 5:
+                x_spatial, edge_index, x_temporal, obs_mask, g_vel = tensor_pack
+            else:
+                x_spatial, edge_index, x_temporal = tensor_pack[:3]
+                obs_mask, g_vel = None, None
         except ValueError as ve:
             return {}, None
         except Exception as e:
@@ -104,11 +109,13 @@ class CycleProcessor:
             raise e
         t_coordinator = time.time()
         
-        # 3. Fuser (Spatio-Temporal Fusion — Gold Standard)
-        # Sequential: Coordinator output feeds into Fuser via cross-attention
+        # 3. Fuser (Spatio-Temporal Diffusion + PINN + iTransformer Fusion)
         forecast = self.fuser.inference({
             "x_temporal": x_temporal,
-            "spatial_context": spatial_embedding  # Cross-Attention context from GATv2
+            "spatial_context": spatial_embedding,  # Cross-Attention context from GATv2
+            "observability_mask": obs_mask,       # Active Ground Truth sensors
+            "global_velocities": g_vel,           # Macroscopic API speeds
+            "edge_index": edge_index              # Graph topology for diffusion
         })
         t_fuser = time.time()
         

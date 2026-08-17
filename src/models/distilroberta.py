@@ -16,67 +16,117 @@
 #
 # File: src/models/distilroberta.py
 # Author: Gabriel Moraes
-# Date: 2026-02-28
+# Date: 2026-08-17
 
+from typing import List, Optional, Tuple, Dict, Any
 import torch
-import logging
+import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModel
-from typing import List, Dict, Tuple
-from safetensors.torch import save_file
 
 # Enable Tensor Cores globally for matrix multiplications and cuDNN operations
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
+
+class DistilRobertaEmbeddingModel(nn.Module):
+    """
+    Pure Neural Transformer Embedding Model (DistilRoBERTa Backbone).
+    
+    A clean PyTorch Module responsible exclusively for:
+    1. Processing input IDs and attention masks through transformer layers.
+    2. Applying masked mean pooling over token embeddings.
+    3. Returning L2-normalized continuous semantic embeddings.
+    
+    Adheres to SOLID: zero file I/O, zero clustering state, zero external side-effects.
+    """
+
+    def __init__(
+        self,
+        model_name: str = "sentence-transformers/all-distilroberta-v1",
+        transformer: Optional[nn.Module] = None
+    ):
+        super(DistilRobertaEmbeddingModel, self).__init__()
+        self.model_name = model_name
+        self.transformer = transformer or AutoModel.from_pretrained(model_name)
+
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass for semantic representation extraction.
+        
+        Args:
+            input_ids: Token indices tensor [Batch, SeqLen]
+            attention_mask: Attention mask tensor [Batch, SeqLen]
+            
+        Returns:
+            normalized_embeddings: Normalized sentence embeddings [Batch, HiddenDim]
+        """
+        model_output = self.transformer(input_ids=input_ids, attention_mask=attention_mask)
+        token_embeddings = model_output[0]
+        
+        input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+        sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, dim=1)
+        sum_mask = torch.clamp(input_mask_expanded.sum(dim=1), min=1e-9)
+        mean_pooled = sum_embeddings / sum_mask
+        
+        return F.normalize(mean_pooled, p=2, dim=-1)
+
+
+# Clean Facade Orchestrator maintained for legacy agent/pipeline integration
 class DistilRobertaSemanticExtractor:
-    def __init__(self, model_name: str = "sentence-transformers/all-distilroberta-v1", similarity_threshold: float = 0.80):
+    """
+    Semantic Orchestrator Facade.
+    
+    Coordinates the pure DistilRobertaEmbeddingModel with tokenization,
+    semantic clustering (ISemanticClusterer), and persistence (IOntologyRepository).
+    """
+
+    def __init__(
+        self,
+        model_name: str = "sentence-transformers/all-distilroberta-v1",
+        similarity_threshold: float = 0.80,
+        tokenizer: Optional[AutoTokenizer] = None,
+        model: Optional[DistilRobertaEmbeddingModel] = None,
+        clusterer: Optional[Any] = None,
+        repository: Optional[Any] = None
+    ):
+        from src.strategies.semantic_clustering import CosineSemanticClusterer
+        from src.infrastructure.safetensors_repository import SafetensorsRepository
+        import logging
+
         self.logger = logging.getLogger(self.__class__.__name__)
         self.similarity_threshold = similarity_threshold
         
-        self.learned_concepts: Dict[str, torch.Tensor] = {}
-        self.concept_examples: Dict[str, List[str]] = {}
-        self.concept_counter = 0
+        self.clusterer = clusterer or CosineSemanticClusterer(similarity_threshold=similarity_threshold, logger=self.logger)
+        self.repository = repository or SafetensorsRepository(logger=self.logger)
         
-        self.logger.info(f"Loading agnostic NLP embedding model: {model_name} with AMP & Tensor Cores...")
-        try:
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-            self.model = AutoModel.from_pretrained(model_name)
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            self.model.to(self.device)
-            self.model.eval()
-            self.logger.info(f"Model loaded successfully on {self.device}.")
-        except Exception as e:
-            self.logger.error(f"Failed to load embedding model: {e}")
-            self.model = None
+        self.tokenizer = tokenizer or AutoTokenizer.from_pretrained(model_name)
+        self.model = model or DistilRobertaEmbeddingModel(model_name=model_name)
+        
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
+        self.model.eval()
+
+    @property
+    def learned_concepts(self) -> Dict[str, torch.Tensor]:
+        return self.clusterer.get_concept_tensors()
+
+    @property
+    def concept_examples(self) -> Dict[str, List[str]]:
+        return self.clusterer.get_ontology_report()
 
     def _get_embedding(self, texts: List[str]) -> torch.Tensor:
-        """Generates a mean-pooled sentence embedding using AMP for accelerated inference."""
         encoded_input = self.tokenizer(texts, padding=True, truncation=True, return_tensors='pt').to(self.device)
-        
-        # Use Automatic Mixed Precision (AMP) to leverage Tensor Cores and accelerate inference
         device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
         
         with torch.no_grad():
             with torch.autocast(device_type=device_type, dtype=torch.float16 if device_type == 'cuda' else torch.bfloat16):
-                model_output = self.model(**encoded_input)
-            
-        attention_mask = encoded_input['attention_mask']
-        token_embeddings = model_output[0] 
-        input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
-        
-        sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, 1)
-        sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
-        mean_pooled = sum_embeddings / sum_mask
-        
-        cluster_embedding = torch.mean(mean_pooled, dim=0, keepdim=True)
+                pooled = self.model(encoded_input['input_ids'], encoded_input['attention_mask'])
+                
+        cluster_embedding = torch.mean(pooled, dim=0, keepdim=True)
         return F.normalize(cluster_embedding, p=2, dim=1)
 
     def learn_and_map_semantics(self, unique_values: List[str]) -> Tuple[str, bool]:
-        """
-        Evaluates new strings, compares them to known concepts via cosine similarity.
-        Returns the concept ID and a boolean indicating if a NEW concept was created.
-        """
         if not self.model or not unique_values:
             return "unknown_concept", False
 
@@ -86,52 +136,18 @@ class DistilRobertaSemanticExtractor:
                 return "empty_data", False
 
             current_embedding = self._get_embedding(clean_texts)
-            best_match_concept = None
-            highest_similarity = -1.0
-
-            for concept_id, concept_vector in self.learned_concepts.items():
-                # Ensure vectors are compared on the same device
-                similarity = F.cosine_similarity(current_embedding, concept_vector.to(self.device)).item()
-                if similarity > highest_similarity:
-                    highest_similarity = similarity
-                    best_match_concept = concept_id
-
-            if highest_similarity >= self.similarity_threshold:
-                self.logger.debug(f"Mapped to existing {best_match_concept} (Similarity: {highest_similarity:.2f})")
-                
-                new_examples = [ex for ex in clean_texts[:3] if ex not in self.concept_examples[best_match_concept]]
-                self.concept_examples[best_match_concept].extend(new_examples)
-                
-                return best_match_concept, False # False means it is NOT a new concept
-
-            self.concept_counter += 1
-            new_concept_id = f"Semantic_Concept_{self.concept_counter}"
-            
-            # Store learned concepts on CPU to preserve VRAM for active model processing
-            self.learned_concepts[new_concept_id] = current_embedding.cpu()
-            self.concept_examples[new_concept_id] = clean_texts[:5]
-            
-            self.logger.info(f"Discovered new semantic pattern. Created: {new_concept_id}")
-            return new_concept_id, True # True means a new concept was created
-
+            return self.clusterer.match_or_create_concept(
+                current_embedding=current_embedding,
+                clean_texts=clean_texts,
+                device=self.device
+            )
         except Exception as e:
             self.logger.error(f"Error during semantic embedding extraction: {e}")
             return "error_in_extraction", False
 
     def get_ontology_report(self) -> Dict[str, List[str]]:
-        """Returns the dictionary of dynamically learned concepts and their typical examples."""
-        return self.concept_examples
+        return self.clusterer.get_ontology_report()
 
     def save_ontology(self, filepath: str) -> None:
-        """Saves the learned mathematical embeddings to a physical safetensors file."""
-        if not self.learned_concepts:
-            self.logger.warning("No concepts learned yet. Skipping safetensors export.")
-            return
-            
-        try:
-            # Safetensors requires contiguous memory tensors on CPU
-            tensors_to_save = {k: v.contiguous().cpu() for k, v in self.learned_concepts.items()}
-            save_file(tensors_to_save, filepath)
-            self.logger.info(f"Successfully serialized {len(tensors_to_save)} concepts to {filepath}")
-        except Exception as e:
-            self.logger.error(f"Failed to save ontology to safetensors: {e}")
+        tensors = self.clusterer.get_concept_tensors()
+        self.repository.save_tensors(tensors, filepath)

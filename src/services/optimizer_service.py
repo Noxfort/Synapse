@@ -127,7 +127,8 @@ class OptimizerService(QObject):
         Generic Optimization Loop.
         Handles Study creation, Callbacks, and Resource Cleanup.
         """
-        study = optuna.create_study(direction="minimize")
+        pruner = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=2, interval_steps=1)
+        study = optuna.create_study(direction="minimize", pruner=pruner)
         
         callback = DerivativeConvergenceCallback(
             slope_threshold=slope_threshold, 

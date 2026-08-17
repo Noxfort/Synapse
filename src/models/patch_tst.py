@@ -22,6 +22,10 @@ import math
 import torch
 import torch.nn as nn
 
+# Enable Tensor Cores globally for matrix multiplications and cuDNN operations
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
 
 class PatchTST(nn.Module):
     """

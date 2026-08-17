@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -16,36 +16,36 @@
 #
 # File: ui/wizards/import_wizard.py
 # Author: Gabriel Moraes
-# Date: 2025-11-30
+# Date: 2026-02-27
 
-import sqlite3
-import pandas as pd
 import os
+import pandas as pd
+import pyarrow.parquet as pq
 from PyQt6.QtCore import Qt, pyqtSlot, QThread
 from PyQt6.QtWidgets import (
     QWizard, QWizardPage, QVBoxLayout, QLabel, QLineEdit, 
-    QPushButton, QFileDialog, QFormLayout, QSpinBox, QListWidget,
+    QPushButton, QFileDialog, QFormLayout, QListWidget,
     QProgressBar, QTextEdit, QMessageBox
 )
 from ui.styles.theme_manager import ThemeManager
 
 from src.services.database_importer import DatabaseImporter
+from src.utils.parquet_validator import ParquetValidator
 
 class ImportWizard(QWizard):
     """
-    Wizard dialog to guide the user through the 'Raw Data -> Base DB' process.
-    Supports both Parquet (New Standard) and SQLite (Legacy).
+    Wizard dialog to guide the user through the Historical Parquet Data ingestion.
+    Strictly accepts .parquet files without requiring manual target interval settings.
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Import Historical Data"))
         self.setWizardStyle(QWizard.WizardStyle.ModernStyle)
-        self.resize(600, 450)
+        self.resize(620, 480)
         
         # Shared State
         self.source_path = ""
-        self.target_freq = 1.0
         
         # Pages
         self.page_intro = IntroPage(self)
@@ -60,12 +60,12 @@ class IntroPage(QWizardPage):
     def __init__(self, wizard):
         super().__init__(wizard)
         self.setTitle(self.tr("Select Source Data"))
-        self.setSubTitle(self.tr("Choose the raw data file (.parquet or .db) containing historical traffic."))
+        self.setSubTitle(self.tr("Choose the historical data file (.parquet) containing traffic records."))
         
         layout = QVBoxLayout(self)
         
         self.path_edit = QLineEdit()
-        self.path_edit.setPlaceholderText(self.tr("Path to .parquet or .db file..."))
+        self.path_edit.setPlaceholderText(self.tr("Path to .parquet file..."))
         self.path_edit.setReadOnly(True)
         
         btn_browse = QPushButton(self.tr("Browse..."))
@@ -81,12 +81,11 @@ class IntroPage(QWizardPage):
         self.registerField("source_path*", self.path_edit) # * means mandatory
 
     def _browse(self):
-        # Updated filter to prioritize Parquet
         f, _ = QFileDialog.getOpenFileName(
             self, 
-            "Open Data Source", 
+            self.tr("Open Historical Data (.parquet)"), 
             "", 
-            "All Supported (*.parquet *.db);;Parquet Files (*.parquet);;SQLite Database (*.db)"
+            "Parquet Files (*.parquet)"
         )
         if f:
             self.path_edit.setText(f)
@@ -95,31 +94,18 @@ class IntroPage(QWizardPage):
 class ConfigPage(QWizardPage):
     def __init__(self, wizard):
         super().__init__(wizard)
-        self.setTitle(self.tr("Configuration & Inspection"))
-        self.setSubTitle(self.tr("Review found sources and define the target timebase."))
+        self.setTitle(self.tr("Dataset Inspection"))
+        self.setSubTitle(self.tr("Review dataset structure and historical data summary."))
         
         layout = QVBoxLayout(self)
         
         # Inspection List
-        layout.addWidget(QLabel(self.tr("Sources found in file:")))
+        layout.addWidget(QLabel(self.tr("Dataset Information:")))
         self.list_tables = QListWidget()
         layout.addWidget(self.list_tables)
-        
-        # Frequency Setting
-        self.spin_freq = QSpinBox()
-        self.spin_freq.setRange(1, 60)
-        self.spin_freq.setValue(1)
-        self.spin_freq.setSuffix(self.tr(" min"))
-        self.spin_freq.setToolTip(self.tr("The common interval to synchronize all sensors."))
-        
-        form = QFormLayout()
-        form.addRow(self.tr("Target Interval (Base):"), self.spin_freq)
-        layout.addLayout(form)
-        
-        self.registerField("target_freq", self.spin_freq)
 
     def initializePage(self):
-        """Called when user enters this page. We scan the file here."""
+        """Called when user enters this page. Scans and inspects the parquet file."""
         path = self.wizard().source_path
         self.list_tables.clear()
         
@@ -127,60 +113,75 @@ class ConfigPage(QWizardPage):
             self.list_tables.addItem(self.tr("❌ File not found."))
             return
 
-        try:
-            # Logic branch based on extension
-            if path.endswith('.parquet'):
-                self._inspect_parquet(path)
-            elif path.endswith('.db') or path.endswith('.sqlite'):
-                self._inspect_sqlite(path)
-            else:
-                self.list_tables.addItem(self.tr("⚠️ Unsupported file format."))
-                    
-        except Exception as e:
-            self.list_tables.addItem(f"❌ Error reading file: {e}")
+        if not path.lower().endswith('.parquet'):
+            self.list_tables.addItem(self.tr("⚠️ Unsupported file format. Please select a .parquet file."))
+            return
 
-    def _inspect_parquet(self, path):
-        """Reads Parquet metadata/columns using Pandas."""
+        self._inspect_parquet(path)
+
+    def _inspect_parquet(self, path: str):
+        """Reads Parquet schema and metadata to present complete dataset info."""
         try:
-            # Read just the columns or a small sample to be fast
-            df = pd.read_parquet(path)
+            file_size_mb = os.path.getsize(path) / (1024 * 1024)
+            self.list_tables.addItem(f"📁 [File] {os.path.basename(path)} ({file_size_mb:.2f} MB)")
             
-            if 'source_table' in df.columns:
-                sources = df['source_table'].unique()
-                for s in sources:
-                    self.list_tables.addItem(f"📦 [Source] {s}")
-                self.list_tables.addItem(f"\nTotal Sources: {len(sources)}")
-            else:
-                self.list_tables.addItem(f"📄 [Single Table] {os.path.basename(path)}")
-                self.list_tables.addItem(f"   Columns: {', '.join(df.columns)}")
+            # Read schema and metadata without loading full data in memory
+            parquet_file = pq.ParquetFile(path)
+            schema = parquet_file.schema
+            num_rows = parquet_file.metadata.num_rows
+            col_names = schema.names
+            
+            self.list_tables.addItem(f"📊 [Total Rows] {num_rows:,}")
+            self.list_tables.addItem(f"📋 [Columns ({len(col_names)})] {', '.join(col_names)}")
+            
+            # Detect time column & timespan
+            time_col = None
+            try:
+                time_col = ParquetValidator._detect_time_column(path)
+            except Exception:
+                pass
                 
-            self.list_tables.addItem(f"   Total Rows: {len(df)}")
+            if time_col:
+                df_time = pd.read_parquet(path, columns=[time_col])
+                df_time[time_col] = pd.to_datetime(df_time[time_col], errors='coerce', utc=True)
+                df_time = df_time.dropna(subset=[time_col])
+                
+                if not df_time.empty:
+                    min_time = df_time[time_col].min()
+                    max_time = df_time[time_col].max()
+                    unique_days = df_time[time_col].dt.date.nunique()
+                    
+                    self.list_tables.addItem(f"⏱️ [Time Column] '{time_col}'")
+                    self.list_tables.addItem(f"📅 [Timespan] {min_time.strftime('%Y-%m-%d %H:%M')} to {max_time.strftime('%Y-%m-%d %H:%M')}")
+                    self.list_tables.addItem(f"🗓️ [Unique Calendar Days] {unique_days} day(s)")
+                    
+                    if unique_days >= ParquetValidator.REQUIRED_DAYS:
+                        self.list_tables.addItem(f"✅ Historical span requirement met (≥ {ParquetValidator.REQUIRED_DAYS} days).")
+                    else:
+                        self.list_tables.addItem(f"⚠️ Warning: Dataset has {unique_days} days. Minimum required is {ParquetValidator.REQUIRED_DAYS} days.")
             
+            # Detect sensor / source grouping columns
+            sensor_cols = [c for c in ['sensor_id', 'source_table', 'edge_id', 'detector_id'] if c in col_names]
+            if sensor_cols:
+                target_sensor_col = sensor_cols[0]
+                df_sensors = pd.read_parquet(path, columns=[target_sensor_col])
+                unique_sensors = df_sensors[target_sensor_col].dropna().unique()
+                self.list_tables.addItem(f"📡 [Identified Sources/Sensors] {len(unique_sensors)} found ({target_sensor_col})")
+                
+                sample_sensors = list(unique_sensors[:5])
+                sensors_str = ', '.join(str(s) for s in sample_sensors)
+                if len(unique_sensors) > 5:
+                    sensors_str += f", ... (+{len(unique_sensors) - 5} more)"
+                self.list_tables.addItem(f"   ↳ {sensors_str}")
+
         except Exception as e:
             self.list_tables.addItem(f"❌ Failed to inspect Parquet: {e}")
-
-    def _inspect_sqlite(self, path):
-        """Legacy SQLite inspection."""
-        try:
-            conn = sqlite3.connect(path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'view');")
-            tables = [r[0] for r in cursor.fetchall() if not r[0].startswith('sqlite_')]
-            conn.close()
-            
-            if not tables:
-                self.list_tables.addItem(self.tr("⚠️ No tables found! Invalid DB."))
-            else:
-                for t in tables:
-                    self.list_tables.addItem(f"🗃️ [Table] {t}")
-        except Exception as e:
-            raise e
 
 class ProcessingPage(QWizardPage):
     def __init__(self, wizard):
         super().__init__(wizard)
         self.setTitle(self.tr("Processing Import"))
-        self.setSubTitle(self.tr("Transforming raw data into Base Database (Parquet)..."))
+        self.setSubTitle(self.tr("Importing historical data into Base Database (Parquet)..."))
         
         layout = QVBoxLayout(self)
         
@@ -212,9 +213,7 @@ class ProcessingPage(QWizardPage):
 
     def _start_task(self):
         path = self.wizard().source_path
-        freq = self.wizard().field("target_freq")
-        # Trigger ETL
-        self.importer.execute_import(path, float(freq))
+        self.importer.execute_import(path)
 
     @pyqtSlot(str)
     def _log(self, msg):

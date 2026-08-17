@@ -30,13 +30,15 @@ The `CoordinatorAgent` uses a Graph Attention Network v2 (Brody et al., 2022) to
   - Multi-Head Attention (4 heads) computes $e_{ij} = a(W x_i, W x_j)$.
   - The output node embedding is a weighted sum of its neighbors' features, allowing upstream congestion to mathematically penalize the speed estimation of downstream nodes.
 
-## 3. Local Feature Extraction: `TCN` (`tcn_model.py`)
+## 3. Local Feature Extraction & Denoising: `TCNAE` (`tcn_ae.py`)
 
-Each `SpecialistAgent` owns a Temporal Convolutional Network.
+Each `SpecialistAgent` owns a featherweight Temporal Convolutional Autoencoder (TCN-AE).
 
-- **Architecture**: Causal 1D convolutions with weight normalization and residual connections.
-- **Dilations**: Exponentially increasing dilation factors (e.g., $d \in \{1, 2, 4, 8\}$). 
-- **Advantage**: The receptive field grows exponentially with depth, allowing the network to look far back in time without the vanishing gradient problems or sequential bottleneck of LSTMs.
+- **Architecture**: Symmetrical Causal 1D Convolutional Autoencoder (`TCNAEEncoder` + `TCNAEDecoder`) with weight normalization, residual connections, and parameterized causal padding (`Chomp1d`).
+- **Footprint**: Ultra-lightweight configuration (`channels=[8, 16]`, `latent_dim=32`), totaling **~3,500 parameters (< 20 KB VRAM per node)**.
+- **Warmup & Freeze Lifecycle**:
+  - *Cold-Start / Warmup*: When a node initializes, the network adapts locally for 5-10 ticks until reconstruction loss falls below threshold.
+  - *Freeze Phase*: Upon validation, weights are locked (`requires_grad=False`). The node runs inference-only in $< 0.01\text{ ms}$, with reconstruction error acting as a zero-cost local anomaly detector.
 
 ## 4. Anomaly Detection: `WaveletAE-OCC` (`wavelet_ae_occ.py`)
 

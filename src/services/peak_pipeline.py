@@ -13,6 +13,7 @@ import pandas as pd
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torch.amp import autocast
 from sklearn.mixture import GaussianMixture
 from typing import Dict, Optional, Tuple, TYPE_CHECKING
 
@@ -132,9 +133,10 @@ class PeakPipeline:
         return schedule
 
     def _extract_features(self, volume: torch.Tensor, speed: torch.Tensor) -> np.ndarray:
-        """Chunked neural feature extraction to prevent VRAM overflow."""
+        """Chunked neural feature extraction to prevent VRAM overflow (AMP accelerated)."""
         all_features = []
         total_len = volume.shape[1]
+        device_type = self.device.type if self.device.type != 'mps' else 'cpu'
 
         for i in range(0, total_len, self.chunk_size):
             vol_chunk = volume[:, i:i + self.chunk_size]
@@ -148,9 +150,10 @@ class PeakPipeline:
 
             with torch.no_grad():
                 multivariate = torch.stack((vol_chunk, spd_chunk), dim=-1).to(self.device)
-                stress = self.itransformer(multivariate)
-                features = self.timesnet(stress)
-                chunk_result = features.mean(dim=-1).cpu().numpy().flatten()
+                with autocast(device_type=device_type, enabled=(self.device.type == 'cuda')):
+                    stress = self.itransformer(multivariate)
+                    features = self.timesnet(stress)
+                chunk_result = features.mean(dim=-1).cpu().float().numpy().flatten()
 
                 if current_len < self.chunk_size:
                     chunk_result = chunk_result[:current_len]

@@ -19,17 +19,20 @@
 # Date: 2026-02-28
 
 import sys
+import signal
 print("[BOOT] Loading SYNAPSE modules...")
 
 try:
     import click
     from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtCore import QTimer
     
     # Import the Orchestrator (Backend)
     from src.main_controller import MainController
     
     # Import the View (Frontend)
     from ui.main_window import MainWindow
+    from src.utils.process_utils import hard_kill
     
 except ImportError as e:
     print(f"[CRITICAL] Failed to import core modules: {e}")
@@ -43,10 +46,19 @@ def start_ui():
     print("[Launcher] Initializing PyQt6 Application...")
     
     try:
+        # Register SIGINT (Ctrl+C) and SIGTERM for hardkill
+        signal.signal(signal.SIGINT, hard_kill)
+        signal.signal(signal.SIGTERM, hard_kill)
+
         # 1. Initialize the Qt Application
         app = QApplication(sys.argv)
         app.setApplicationName("SYNAPSE")
         app.setOrganizationName("Noxfort Systems")
+
+        # Periodically allow Python interpreter to process OS signals (SIGINT)
+        sig_timer = QTimer()
+        sig_timer.start(250)
+        sig_timer.timeout.connect(lambda: None)
 
         # 3. Initialize the Main Controller (The Brain / Backend)
         # This initializes the AppState and prepares the Service Layer (Optimizer, Engine, etc.)

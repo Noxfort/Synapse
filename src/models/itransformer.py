@@ -22,6 +22,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# Enable Tensor Cores globally for matrix multiplications and cuDNN operations
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
 class iTransformer(nn.Module):
     """
     Inverted Transformer (iTransformer) for Global Traffic Fusion.

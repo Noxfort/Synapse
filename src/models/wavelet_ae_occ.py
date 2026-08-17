@@ -16,8 +16,9 @@
 #
 # File: src/models/wavelet_ae_occ.py
 # Author: Gabriel Moraes
-# Date: 2026-03-02
+# Date: 2026-08-17
 
+from typing import Dict, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -30,55 +31,52 @@ try:
 except ImportError:
     KYMATIO_AVAILABLE = False
 
-class WaveletAEOCC(nn.Module):
+# Enable Tensor Cores globally for matrix multiplications and cuDNN operations
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
+
+class WaveletSpectralAE(nn.Module):
     """
-    Hybrid Neural Architecture for Anomaly Detection.
+    Pure Spectral Wavelet Autoencoder (Wavelet-AE).
     
-    Components:
-    1. Fixed Feature Extractor: Wavelet Scattering Transform (Invariant to translation/noise).
-    2. Compressor: Lightweight Autoencoder (Bottle-neck).
-    3. Classifier: Adaptive One-Class Classifier (Deep SVDD style with EMA threshold).
+    A clean neural network module responsible exclusively for:
+    1. Extracting translation-invariant spectral representations via Wavelet Scattering.
+    2. Compressing representations into a latent manifold [Batch, LatentDim].
+    3. Decoding back to spectral domain [Batch, ScatDim] and time domain [Batch, InputLen].
+    
+    Adheres strictly to SOLID: zero statistical anomaly state, zero internal loss calculations.
     """
 
-    def __init__(self, input_len: int, J: int = 2, Q: int = 1, latent_dim: int = 16):
-        """
-        Args:
-            input_len: Length of the time-series window (T).
-            J: Scale of scattering (2^J must be <= padded_len).
-            Q: Quality factor (filters per octave).
-            latent_dim: Dimension of the AE bottleneck.
-        """
+    def __init__(
+        self,
+        input_len: int,
+        J: int = 2,
+        Q: int = 1,
+        latent_dim: int = 16
+    ):
         super().__init__()
         
         self.input_len = input_len
         self.latent_dim = latent_dim
-        self.center_initialized = False
         
         # --- Padding Strategy to Avoid Border Effects ---
-        # We artificially extend the signal using reflection padding so Kymatio
-        # has enough support to apply the Wavelet Transform without edge distortion.
-        # We pad to the next power of 2 that is strictly greater than input_len.
         self.padded_len = 2 ** int(np.ceil(np.log2(input_len)) + 1)
         
         # 1. Wavelet Scattering Setup
         if KYMATIO_AVAILABLE:
-            # T=padded_len ensures global pooling over the entire extended sequence
             self.scattering = Scattering1D(J=J, shape=(self.padded_len,), Q=Q, T=self.padded_len)
-            
-            # Dynamic dimension calculation
-            # We run a dummy pass on CPU to determine output size
             with torch.no_grad():
                 dummy_input = torch.zeros(1, self.padded_len)
-                dummy_out = self.scattering(dummy_input) # [1, Coeffs, 1]
+                dummy_out = self.scattering(dummy_input)
                 self.scat_dim = dummy_out.shape[1] 
             self.using_wavelets = True
         else:
-            # Fallback: Identity (Raw input, but padded to match dimensions)
             self.scat_dim = self.padded_len
             self.scattering = nn.Identity()
             self.using_wavelets = False
 
-        # 2. Encoder (Features -> Latent)
+        # 2. Spectral Encoder (Features -> Latent)
         self.encoder = nn.Sequential(
             nn.Linear(self.scat_dim, 64),
             nn.LayerNorm(64),
@@ -86,72 +84,90 @@ class WaveletAEOCC(nn.Module):
             nn.Linear(64, latent_dim)
         )
         
-        # 3. Decoder (Latent -> Reconstruction)
+        # 3. Spectral Decoder (Latent -> Wavelet Reconstruction)
         self.decoder = nn.Sequential(
             nn.Linear(latent_dim, 64),
             nn.LayerNorm(64),
             nn.ReLU(),
             nn.Linear(64, self.scat_dim)
         )
+
+        # 4. Time-Domain Reconstruction Head (Latent -> Time Sequence)
+        self.time_decoder = nn.Sequential(
+            nn.Linear(latent_dim, 64),
+            nn.LayerNorm(64),
+            nn.ReLU(),
+            nn.Linear(64, input_len)
+        )
+
+    def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Extracts spectral features and latent representations.
         
-        # 4. One-Class State (Buffers ensure they are saved with model but not trained by SGD)
-        # Center 'c' of the hypersphere
-        self.register_buffer('center', torch.zeros(1, latent_dim))
-        
-        # Adaptive Threshold (EMA updated)
-        self.register_buffer('threshold', torch.tensor(0.5))
-        self.momentum = 0.1 
-
-    def init_center(self, z: torch.Tensor):
-        """
-        Initialize the hypersphere center 'c' as the mean of the first batch.
-        Prevents mode collapse where c=0 and z=0 trivially.
-        """
-        with torch.no_grad():
-            self.center = torch.mean(z, dim=0, keepdim=True)
-            self.center_initialized = True
-
-    def update_threshold(self, anomaly_scores: torch.Tensor):
-        """
-        Updates the anomaly threshold based on the statistics of the current batch (EMA).
-        Threshold ~= Mean + 2 * StdDev (covers ~95% of normal data)
-        """
-        with torch.no_grad():
-            current_limit = anomaly_scores.mean() + 2 * anomaly_scores.std()
-            # EMA: New = (1-m)*Old + m*Current
-            self.threshold = (1 - self.momentum) * self.threshold + self.momentum * current_limit
-
-    def forward(self, x: torch.Tensor):
-        """
+        Args:
+            x: Input tensor [Batch, Time] or [Batch, Channels, Time]
         Returns:
-            feats: Extracted features (Wavelet or Raw).
-            z: Latent representation.
-            rec_feats: Reconstructed features.
+            feats: Extracted wavelet scattering features [Batch, ScatDim]
+            z: Bottleneck latent representations [Batch, LatentDim]
         """
-        # Ensure correct dimensionality [Batch, Time]
-        if x.ndim == 3: 
+        if x.ndim == 3 and x.shape[-1] == 1: 
             x = x.squeeze(-1)
             
-        # --- Apply Reflection Padding ---
         pad_size = self.padded_len - self.input_len
         if pad_size > 0:
             pad_left = pad_size // 2
             pad_right = pad_size - pad_left
-            # mode='reflect' mirrors the data at the boundaries, preventing sharp drops
-            x = F.pad(x, (pad_left, pad_right), mode='reflect')
-        
-        # 1. Feature Extraction
-        if self.using_wavelets:
-            feats = self.scattering(x)
-            # Flatten: [Batch, Coeffs, 1] -> [Batch, Coeffs]
-            feats = feats.view(x.size(0), -1)
+            x_padded = F.pad(x, (pad_left, pad_right), mode='reflect')
         else:
-            feats = x
+            x_padded = x
+        
+        if self.using_wavelets:
+            feats = self.scattering(x_padded)
+            feats = feats.view(x_padded.size(0), -1)
+        else:
+            feats = x_padded
             
-        # 2. Encode
         z = self.encoder(feats)
+        return feats, z
+
+    def decode(self, z: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Reconstructs both spectral and time-domain signals from latent vector.
         
-        # 3. Decode
+        Args:
+            z: Latent vector [Batch, LatentDim]
+        Returns:
+            rec_feats: Reconstructed spectral features [Batch, ScatDim]
+            time_recon: Reconstructed time-series signal [Batch, InputLen]
+        """
         rec_feats = self.decoder(z)
+        time_recon = self.time_decoder(z)
+        return rec_feats, time_recon
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        return_time_recon: bool = True
+    ) -> Union[Tuple[torch.Tensor, torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
+        """
+        Forward pass.
         
+        Args:
+            x: Input tensor [Batch, Time]
+            return_time_recon: If True, returns time-domain signal reconstruction
+        Returns:
+            feats: Extracted features [Batch, ScatDim]
+            z: Latent vector [Batch, LatentDim]
+            rec_feats: Spectral reconstruction [Batch, ScatDim]
+            (optional) time_recon: Time-domain reconstruction [Batch, InputLen]
+        """
+        feats, z = self.encode(x)
+        rec_feats, time_recon = self.decode(z)
+        
+        if return_time_recon:
+            return feats, z, rec_feats, time_recon
         return feats, z, rec_feats
+
+
+# Compatibility Class for existing code references
+WaveletAEOCC = WaveletSpectralAE

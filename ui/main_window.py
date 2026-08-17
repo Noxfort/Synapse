@@ -18,9 +18,9 @@
 # Author: Gabriel Moraes
 # Date: 2026-03-01
 
-from PyQt6.QtCore import QEvent, QSettings
+from PyQt6.QtCore import QEvent, QSettings, Qt
 from PyQt6.QtWidgets import QMainWindow, QApplication, QSystemTrayIcon, QMenu
-from PyQt6.QtGui import QIcon, QAction
+from PyQt6.QtGui import QIcon, QAction, QKeyEvent
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -34,6 +34,7 @@ from ui.handlers.dialog_handler import DialogHandler
 from ui.handlers.signal_router import SignalRouter
 from ui.utilities.translation_manager import TranslationManager
 from ui.styles.theme_manager import ThemeManager
+from src.utils.process_utils import hard_kill
 
 class MainWindow(QMainWindow):
     """
@@ -123,7 +124,8 @@ class MainWindow(QMainWindow):
     def _retranslate_ui(self):
         """Updates main window texts when language changes."""
         self.setWindowTitle(self.tr("SYNAPSE | Intelligent Perception Gateway"))
-        self.status_bar.showMessage(self.tr("System Ready (Waiting for Controller)"))
+        if hasattr(self, 'status_bar'):
+            self.status_bar.showMessage(self.tr("System Ready (Waiting for Controller)"))
 
     def _setup_system_tray(self):
         """Initializes the System Tray Icon for background execution."""
@@ -155,10 +157,13 @@ class MainWindow(QMainWindow):
             self.activateWindow()
 
     def _quit_application(self):
-        """Forces the application to quit by bypassing the hide-on-close behavior."""
+        """Forces immediate hard kill of the application and all child processes."""
         self._is_quitting = True
-        self.close()
-        QApplication.instance().quit()
+        try:
+            self.controller.report_shutdown()
+        except Exception:
+            pass
+        hard_kill()
 
     def closeEvent(self, event):
         """Intercepts the application exit. Minimizes to tray unless explicitly quitting."""
@@ -182,3 +187,18 @@ class MainWindow(QMainWindow):
             self.tabs.retranslate_ui()
             self.main_menu.retranslate_ui()
         super().changeEvent(event)
+
+    def toggle_fullscreen(self):
+        """Toggles the window between full screen and normal mode."""
+        if self.isFullScreen():
+            self.showNormal()
+        else:
+            self.showFullScreen()
+
+    def keyPressEvent(self, event: QKeyEvent):
+        """Intercepts key presses, including F11 for full screen toggling."""
+        if event.key() == Qt.Key.Key_F11:
+            self.toggle_fullscreen()
+            event.accept()
+        else:
+            super().keyPressEvent(event)

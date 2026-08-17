@@ -142,6 +142,7 @@ class SignalRouter(QObject):
         menu.open_net_act.triggered.connect(dh.open_network_file)
         menu.import_db_act.triggered.connect(dh.open_import_wizard)
         menu.settings_act.triggered.connect(dh.open_settings)
+        menu.toggle_fullscreen_act.triggered.connect(self.main_window.toggle_fullscreen)
         menu.exit_act.triggered.connect(self.main_window.close)
 
         # --- Dock Actions Connection ---

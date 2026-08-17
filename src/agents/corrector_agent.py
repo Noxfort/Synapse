@@ -16,175 +16,97 @@
 #
 # File: src/agents/corrector_agent.py
 # Author: Gabriel Moraes
-# Date: 2026-03-02
+# Date: 2026-08-17
 
 import os
-import logging
-import torch
 import numpy as np
 from typing import Dict, Optional, Any
 
 from src.agents.base_agent import BaseAgent
-from src.models.vae_tcn import VAETCN
-from src.utils.normalization import TensorNormalizer
+from src.domain.interfaces import ICorrectorPipeline, ICorrectorTrainer
+from src.services.corrector_pipeline import CorrectorPipeline
+from src.services.corrector_trainer import CorrectorTrainer
+from src.utils.convergence_tracker import MarginalConvergenceTracker
 
-logger = logging.getLogger(__name__)
 
 class CorrectorAgent(BaseAgent):
     """
     The Corrector Agent (Zelador).
-    Uses a VAE-TCN architecture to filter noise, reconstruct corrupted data,
-    and generate a reliable Golden Dataset.
-    Includes built-in Z-Score Normalization to prevent Exploding Gradients.
-    """
     
-    def __init__(self, input_dim: int, seq_len: int = 10, hidden_dim: int = 64, latent_dim: int = 32, kernel_size: int = 3, learning_rate: float = 1e-3, device: Optional[str] = None):
-        vae_model = VAETCN(
-            input_channels=input_dim, 
-            hidden_channels=hidden_dim,
-            latent_channels=latent_dim,
-            kernel_size=kernel_size
+    Pure Orchestrator Architecture (SOLID Compliant):
+    - Single Responsibility: Manages physics-informed denoising and golden dataset generation.
+    - Delegations:
+      -> PI-VAE Inference & Normalization: ICorrectorPipeline (src/services/corrector_pipeline.py)
+      -> PI-VAE Convergence & Training: ICorrectorTrainer (src/services/corrector_trainer.py)
+    """
+
+    def __init__(
+        self,
+        pipeline: Optional[ICorrectorPipeline] = None,
+        trainer: Optional[ICorrectorTrainer] = None,
+        input_dim: int = 1,
+        seq_len: int = 10,
+        hidden_dim: int = 64,
+        latent_dim: int = 32,
+        kernel_size: int = 3,
+        learning_rate: float = 1e-3,
+        physics_weight: float = 0.1,
+        max_acceleration: float = 10.0,
+        device: Optional[str] = None,
+        name: str = "CorrectorAgent",
+        **kwargs: Any
+    ):
+        if pipeline is None:
+            pipeline = CorrectorPipeline(
+                input_dim=input_dim,
+                hidden_dim=hidden_dim,
+                latent_dim=latent_dim,
+                kernel_size=kernel_size,
+                max_acceleration=max_acceleration,
+                device=device
+            )
+
+        model = getattr(pipeline, "model", None)
+        super().__init__(model=model, name=name)
+
+        self.pipeline: ICorrectorPipeline = pipeline
+        self.trainer: ICorrectorTrainer = trainer or CorrectorTrainer(
+            model=self.model,
+            learning_rate=learning_rate,
+            physics_weight=physics_weight,
+            device=getattr(self.pipeline, "device", None)
         )
-        
-        super().__init__(model=vae_model, name="CorrectorAgent")
-        
         self.input_dim = input_dim
         self.seq_len = seq_len
         self.kernel_size = kernel_size
         self.learning_rate = learning_rate
-        
-        if device is None:
-            target_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            target_device = torch.device(device)
-            
-        self.to(target_device)
-        logger.info(f"[{self.name}] Initializing VAE-TCN on device: {self.device}")
-        
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
+        self.physics_weight = physics_weight
+        self.max_acceleration = max_acceleration
 
     def inference(self, input_data: Any, batch_size: int = 128) -> np.ndarray:
-        """
-        Performs inference with dynamic Z-score normalization to match training distribution.
-        """
-        self.model.eval()
-        original_dim = len(input_data.shape)
-        
-        if original_dim == 2:
-            input_data = np.expand_dims(input_data, axis=-1)
-        elif original_dim == 3:
-            input_data = np.transpose(input_data, (0, 2, 1))
-            
-        dataset_size = input_data.shape[0]
-        reconstructed_results = []
-        
-        try:
-            x_tensor_cpu = torch.tensor(input_data, dtype=torch.float32)
-            
-            with torch.no_grad():
-                for i in range(0, dataset_size, batch_size):
-                    batch_x = x_tensor_cpu[i:i+batch_size].to(self.device)
-                    
-                    # --- Z-Score Inference Normalization (SRP: Delegated) ---
-                    batch_x_norm, mean, std = TensorNormalizer.zscore_norm(batch_x, seq_dim=2)
-                    recon_x_norm, mu, logvar = self.model(batch_x_norm)
-                    recon_x = TensorNormalizer.zscore_denorm(recon_x_norm, mean, std)
-                    
-                    reconstructed_results.append(recon_x.cpu().numpy())
-                    
-                    del batch_x, batch_x_norm, recon_x, recon_x_norm, mu, logvar
-                    if self.device.type == 'cuda':
-                        torch.cuda.empty_cache()
-                        
-            final_reconstruction = np.concatenate(reconstructed_results, axis=0)
-            
-            if original_dim == 2:
-                final_reconstruction = np.squeeze(final_reconstruction, axis=-1)
-            elif original_dim == 3:
-                final_reconstruction = np.transpose(final_reconstruction, (0, 2, 1))
-                
-            return final_reconstruction
-            
-        except Exception as e:
-            logger.error(f"[{self.name}] Error during inference: {str(e)}")
-            raise
+        """Delegates denoising and signal correction to CorrectorPipeline."""
+        return self.pipeline.correct(input_data, batch_size=batch_size)
 
     def train_step(self, batch_data: Any) -> float:
-        """
-        Single training step with strictly enforced Z-Score Normalization
-        to eradicate Exploding Gradients and inf/NaN loss outputs.
-        """
-        self.model.train()
-        
-        if not isinstance(batch_data, torch.Tensor):
-            batch_data = torch.tensor(batch_data, dtype=torch.float32)
-            
-        if batch_data.dim() == 2:
-            batch_data = batch_data.unsqueeze(-1)
-        elif batch_data.dim() == 3:
-            batch_data = batch_data.permute(0, 2, 1)
-            
-        batch_data = batch_data.to(self.device)
-        
-        batch_data = TensorNormalizer.sanitize(batch_data)
-            
-        # --- Z-Score Training Normalization (SRP: Delegated) ---
-        batch_data_norm, mean, std = TensorNormalizer.zscore_norm(batch_data, seq_dim=2)
-        
-        self.optimizer.zero_grad()
-        
-        # Feed normalized data to the network
-        recon_x_norm, mu, logvar = self.model(batch_data_norm)
-        
-        # Calculate loss on the normalized space
-        recon_loss = torch.nn.functional.mse_loss(recon_x_norm, batch_data_norm, reduction='mean')
-        
-        logvar_clamped = torch.clamp(logvar, min=-10.0, max=5.0)
-        mu_clamped = torch.clamp(mu, min=-20.0, max=20.0)
-        
-        kl_div = -0.5 * torch.mean(1 + logvar_clamped - mu_clamped.pow(2) - logvar_clamped.exp())
-        
-        beta = 0.001
-        loss = recon_loss + (beta * kl_div)
-        
-        if torch.isnan(loss) or torch.isinf(loss):
-            logger.warning(f"[{self.name}] NaNs/Infs detected in loss computation. Skipping optimization step.")
-            return 1e6 # Return a highly penalized valid float instead of inf to keep AutoML running cleanly
-            
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.1)
-        self.optimizer.step()
-        
-        return loss.item()
+        """Delegates single step optimization to CorrectorTrainer."""
+        return self.trainer.train_step(batch_data)
 
-    def train(self, data: np.ndarray, epochs: int = 50, batch_size: int = 64) -> Dict[str, list]:
-        """Legacy helper method."""
-        dataset_size = data.shape[0]
-        history = {'loss': []}
-        x_tensor_cpu = torch.tensor(data, dtype=torch.float32)
-        
-        for epoch in range(epochs):
-            epoch_loss = 0.0
-            indices = torch.randperm(dataset_size)
-            
-            for i in range(0, dataset_size, batch_size):
-                batch_indices = indices[i:i+batch_size]
-                batch_x = x_tensor_cpu[batch_indices]
-                
-                step_loss = self.train_step(batch_x)
-                if step_loss < 1e5: # Only accumulate valid losses
-                    epoch_loss += step_loss
-                
-                if self.device.type == 'cuda':
-                    torch.cuda.empty_cache()
-                    
-            avg_loss = epoch_loss / max(1, (dataset_size // batch_size))
-            history['loss'].append(avg_loss)
-            
-            if (epoch + 1) % 10 == 0 or epoch == 0:
-                logger.info(f"[{self.name}] Epoch {epoch+1}/{epochs} | Loss: {avg_loss:.4f}")
-                
-        return history
+    def train(
+        self,
+        data: np.ndarray,
+        epochs: int = 100,
+        batch_size: int = 64,
+        tracker: Optional[MarginalConvergenceTracker] = None,
+        use_dynamic_convergence: bool = True
+    ) -> Dict[str, list]:
+        """Delegates full convergence training to CorrectorTrainer."""
+        return self.trainer.train(
+            data=data,
+            epochs=epochs,
+            batch_size=batch_size,
+            tracker=tracker,
+            use_dynamic_convergence=use_dynamic_convergence
+        )
 
     def save_weights(self, path: str):
         os.makedirs(os.path.dirname(path), exist_ok=True)

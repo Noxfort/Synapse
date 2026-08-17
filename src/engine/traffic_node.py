@@ -80,17 +80,40 @@ class TrafficNode:
         
         self.steps_processed = 0
         self.fallback_steps = 0
+        
+        # --- Adaptive Learning & Validation State (1-5-10 Rule) ---
+        self.is_validated = False
+        self.is_rejected = False
+        self.LOSS_CONVERGENCE_THRESHOLD = 0.15
 
     @property
     def is_ready(self) -> bool:
-        """Returns True if the node has enough data to start inference."""
-        return self.memory.is_ready()
+        """Returns True if the node is validated or has enough data."""
+        return self.is_validated or self.memory.is_ready()
+
+    def _sync_source_status(self, status: SourceStatus):
+        """Helper to propagate validation or rejection status to DataSource in AppState."""
+        if self.graph_manager and hasattr(self.graph_manager, 'app_state') and self.graph_manager.app_state:
+            app_state = self.graph_manager.app_state
+            for src in app_state.get_all_data_sources():
+                if src.id == self.source_id or app_state.get_element_for_source(src.id) == self.source_id:
+                    src.status = status
 
     def step(self, value: float) -> Dict[str, Any]:
         """
         Processes a REAL data point (Ground Truth from Sensor).
         Updates both AI Memory and Kinetic Physics Model.
+        Performs progressive 1-5-10 sample adaptive learning.
         """
+        if self.is_rejected:
+            return {
+                "source_id": self.source_id,
+                "status": "Rejected",
+                "ready": False,
+                "value": value,
+                "rejected": True
+            }
+
         # 1. Rollback Correction (If recovering from silence)
         if self.fallback_steps > 0:
             print(f"[TrafficNode] 🏥 REANIMATION: Sensor '{self.source_id}' recovered. Rolling back {self.fallback_steps} synthetic steps.")
@@ -116,18 +139,12 @@ class TrafficNode:
         # 3. Normal Ingest (AI Memory)
         self.memory.push([value])
         self.steps_processed += 1
-        
-        if not self.memory.is_ready():
-            return {
-                "source_id": self.source_id,
-                "status": "Warming up",
-                "buffer_size": len(self.memory.buffer),
-                "ready": False
-            }
 
-        # 4. Online Learning (Adaptation)
-        current_window_tensor = self.memory.get_tensor()
-        loss = self.agent.train(current_window_tensor, current_window_tensor)
+        # 4. Online Learning (Warmup training or continuous PBT)
+        loss = 0.0
+        if not self.is_validated or not getattr(self.agent, "is_frozen", False):
+            current_window_tensor = self.memory.get_tensor()
+            loss = self.agent.train(current_window_tensor, current_window_tensor)
 
         # 5. Inference (SRP Fix: Delegate tensor shapes to Agent)
         history_np = self.memory.get_numpy()
@@ -137,6 +154,29 @@ class TrafficNode:
         if current_embedding is not None:
             self.last_embedding = current_embedding
         
+        # 6. Progressive Validation Check (1 -> 5 -> 10 samples)
+        if not self.is_validated:
+            loss_val = float(loss) if (loss is not None and not np.isnan(loss)) else 1.0
+            
+            if loss_val < self.LOSS_CONVERGENCE_THRESHOLD:
+                self.is_validated = True
+                self._sync_source_status(SourceStatus.ACTIVE)
+                if hasattr(self.agent, "freeze"):
+                    self.agent.freeze()
+                print(f"[TrafficNode] ✅ Sensor '{self.source_id}' aprendeu na amostra {self.steps_processed} (loss={loss_val:.4f}). Validado, Congelado e Ativo!")
+            elif self.steps_processed > 10:
+                self.is_rejected = True
+                self._sync_source_status(SourceStatus.REJECTED)
+                print(f"[TrafficNode] 🚫 Sensor '{self.source_id}' descartado após 10 amostras sem convergência (loss={loss_val:.4f}).")
+                return {
+                    "source_id": self.source_id,
+                    "status": "Rejected",
+                    "ready": False,
+                    "loss": loss,
+                    "value": value,
+                    "rejected": True
+                }
+
         # Mark as updated this cycle
         self._updated_this_cycle = True
 
@@ -149,11 +189,13 @@ class TrafficNode:
             "confidence": kse_snapshot.confidence
         }
 
+        status_str = "Active" if self.is_validated else f"Calibrando ({self.steps_processed}/10)"
+
         return {
             "source_id": self.source_id,
-            "status": "Active",
+            "status": status_str,
             "type": "real",
-            "ready": True,
+            "ready": self.is_validated,
             "loss": loss,
             "embedding": current_embedding,
             "value": value,

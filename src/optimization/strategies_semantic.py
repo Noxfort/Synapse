@@ -22,10 +22,12 @@ import torch
 import numpy as np
 from typing import Any
 import logging
+import optuna
 
 # Import Agents ONLY - Strict Encapsulation
 from src.agents.linguist_agent import LinguistAgent
 from src.agents.peak_classifier_agent import PeakClassifierAgent
+from src.utils.convergence_tracker import MarginalConvergenceTracker
 
 logger = logging.getLogger("Synapse.Strategies.Semantic")
 
@@ -41,7 +43,7 @@ class SemanticStrategies:
     @staticmethod
     def linguist_strategy(trial, data: Any, device: torch.device) -> float:
         """
-        Optimizes the Linguist Agent (DistilRoBERTa + TCN-AE).
+        Optimizes the Linguist Agent (DistilRoBERTa + TCN-AE + PINN).
         Focuses on Reconstruction Loss of the physics/numeric signals (TCN-AE),
         since the Semantic/Grammar Transformer is frozen during HPO.
         """
@@ -63,16 +65,25 @@ class SemanticStrategies:
             train_data = np.random.randn(16, 1, 60).astype(np.float32)
 
         try:
-            total_loss = 0.0
-            steps = 5 
+            tracker = MarginalConvergenceTracker(
+                min_epochs=3,
+                max_epochs=20,
+                patience=3,
+                min_delta=1e-4,
+                optuna_trial=trial
+            )
             
-            for _ in range(steps):
+            for epoch in range(tracker.max_epochs):
                 loss = agent.train_step(train_data)
-                total_loss += loss
+                if not np.isfinite(loss):
+                    return float('inf')
+                if tracker.step(epoch, loss, model=agent.model):
+                    break
             
-            avg_loss = total_loss / steps
-            return avg_loss
+            return tracker.best_loss
 
+        except optuna.TrialPruned:
+            raise
         except Exception as e:
             logger.warning(f"[Linguist] Training failed: {e}")
             return float('inf')
@@ -125,18 +136,28 @@ class SemanticStrategies:
             logger.error(f"[Classifier] Init Error: {e}")
             return float('inf')
 
-        # 4. Training Loop delegated to the Agent
+        # 4. Dynamic Training Loop delegated to the Agent
         try:
-            total_loss = 0.0
-            epochs = 5
+            tracker = MarginalConvergenceTracker(
+                min_epochs=3,
+                max_epochs=20,
+                patience=3,
+                min_delta=1e-4,
+                optuna_trial=trial
+            )
             
-            for _ in range(epochs):
+            for epoch in range(tracker.max_epochs):
                 # Agent internally handles AMP context, tensors mapping, and optimizer steps
                 loss = agent.train_step(inputs, targets)
-                total_loss += loss
+                if not np.isfinite(loss):
+                    return float('inf')
+                if tracker.step(epoch, loss):
+                    break
             
-            return total_loss / epochs
+            return tracker.best_loss
 
+        except optuna.TrialPruned:
+            raise
         except Exception as e:
             logger.warning(f"[Classifier] Training loop error: {e}")
             return float('inf')

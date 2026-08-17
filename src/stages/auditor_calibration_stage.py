@@ -27,6 +27,7 @@ from typing import Dict, Any
 from src.stages.base_stage import BaseStage
 from src.agents.auditor_agent import AuditorAgent
 from src.services.checkpoint_service import CheckpointService
+from src.utils.convergence_tracker import MarginalConvergenceTracker
 
 
 class AuditorCalibrationStage(BaseStage):
@@ -42,8 +43,12 @@ class AuditorCalibrationStage(BaseStage):
     - auditor_calibrated.pth: Model weights + threshold + center
     """
 
-    # Training Defaults
-    EPOCHS = 30
+    # Training Defaults (Dynamic Marginal Convergence)
+    MAX_SAFETY_EPOCHS = 100
+    MIN_EPOCHS = 5
+    PATIENCE = 4
+    MIN_DELTA = 1e-4
+    SLOPE_THRESHOLD = 1e-4
     BATCH_SIZE = 64
     WINDOW_SIZE = 60  # Matches default seq_len used by NeuralFactory
     CALIBRATION_PERCENTILE = 95
@@ -68,7 +73,7 @@ class AuditorCalibrationStage(BaseStage):
         if self.check_interruption():
             return False
 
-        self.log("[AuditorCalibrationStage] 🏋️ Training Auditor on Golden Dataset...")
+        self.log("[AuditorCalibrationStage] 🏋️ Training Auditor on Golden Dataset (Dynamic Marginal Convergence)...")
 
         try:
             # 1. Load & Prepare Data
@@ -86,10 +91,19 @@ class AuditorCalibrationStage(BaseStage):
                 learning_rate=1e-3
             )
 
-            # 3. Training Loop
-            self.log(f"[AuditorCalibrationStage] 🔄 Training for {self.EPOCHS} epochs (batch={self.BATCH_SIZE})...")
+            # 3. Dynamic Training Loop
+            tracker = MarginalConvergenceTracker(
+                min_epochs=self.MIN_EPOCHS,
+                max_epochs=self.MAX_SAFETY_EPOCHS,
+                patience=self.PATIENCE,
+                min_delta=self.MIN_DELTA,
+                slope_threshold=self.SLOPE_THRESHOLD,
+                restore_best_weights=True
+            )
+
+            self.log(f"[AuditorCalibrationStage] 🔄 Starting dynamic calibration (max={self.MAX_SAFETY_EPOCHS}, min={self.MIN_EPOCHS})...")
             
-            for epoch in range(self.EPOCHS):
+            for epoch in range(self.MAX_SAFETY_EPOCHS):
                 if self.check_interruption():
                     return False
 
@@ -102,15 +116,25 @@ class AuditorCalibrationStage(BaseStage):
                     loss = agent.train_step(batch)
                     epoch_losses.append(loss)
 
-                avg_loss = np.mean(epoch_losses)
+                avg_loss = float(np.mean(epoch_losses))
                 
-                # Log every 5 epochs to avoid spam
+                # Log telemetry
                 if (epoch + 1) % 5 == 0 or epoch == 0:
-                    self.log(f"[AuditorCalibrationStage]   Epoch {epoch+1}/{self.EPOCHS} — Loss: {avg_loss:.6f}")
+                    self.log(f"[AuditorCalibrationStage]   Epoch {epoch+1} — Loss: {avg_loss:.6f}")
 
-                # Progress: 80-90 range (leaving room for calibration + save)
-                progress_val = 80 + int((epoch / self.EPOCHS) * 10)
+                # Check dynamic marginal convergence
+                should_stop = tracker.step(epoch=epoch, loss=avg_loss, model=agent.model)
+
+                # Dynamic progress scaling (80 to 90 range)
+                progress_val = min(90, 80 + int(((epoch + 1) / max(20, epoch + 5)) * 10))
                 self.progress(progress_val)
+
+                if should_stop:
+                    self.log(
+                        f"[AuditorCalibrationStage] 🛑 Converged at epoch {epoch+1} "
+                        f"({tracker.stop_reason}) | Best Loss: {tracker.best_loss:.6f}"
+                    )
+                    break
 
             # 4. Calibrate Threshold
             self.log("[AuditorCalibrationStage] 📐 Calibrating anomaly threshold (percentile 95)...")
@@ -186,11 +210,12 @@ class AuditorCalibrationStage(BaseStage):
 
                 from src.utils.normalization import TensorNormalizer
                 batch, _, _ = TensorNormalizer.instance_norm(batch)
-
-                feats, z, rec_feats = agent.model(batch)
+                feats, z, rec_feats, time_recon, physics_res = agent.model(batch, return_physics=True)
                 rec_err = torch.mean((rec_feats - feats) ** 2, dim=1)
+                time_err = torch.mean((time_recon - batch) ** 2, dim=1)
                 dist_center = torch.sum((z - agent.model.center) ** 2, dim=1)
-                scores = rec_err + (0.1 * dist_center)
+                phys_val = physics_res["total_physics_loss"] if getattr(agent, "enable_pinn", True) else 0.0
+                scores = rec_err + (0.5 * time_err) + (0.1 * dist_center) + (getattr(agent, "physics_weight", 0.5) * phys_val)
                 all_scores.append(scores.cpu())
 
         all_scores = torch.cat(all_scores).numpy()

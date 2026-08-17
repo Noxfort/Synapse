@@ -16,27 +16,20 @@
 #
 # File: src/models/sinkhorn_cross_attention.py
 # Author: Gabriel Moraes
-# Date: 2026-03-08
+# Date: 2026-08-17
 
 """
-Sinkhorn Cross-Attention — SOTA Graph Matching Architecture.
+Sinkhorn Cross-Attention — Pure Graph Matching Architecture.
 
 A Siamese GATv2 encoder with bidirectional Cross-Attention and 
 Sinkhorn doubly-stochastic normalization for optimal 1-to-1 assignment.
-
-Paper References:
-    - GATv2: Brody et al. "How Attentive are Graph Attention Networks?" (ICLR 2022)
-    - SuperGlue: Sarlin et al. "SuperGlue: Learning Feature Matching" (CVPR 2020)
-    - DGMC: Fey et al. "Deep Graph Matching Consensus" (ICLR 2020)
 """
 
 import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import List, Tuple
-
-from safetensors.torch import save_file, load_file
+from typing import List, Tuple, Any
 
 try:
     from torch_geometric.nn import GATv2Conv
@@ -51,7 +44,7 @@ torch.backends.cudnn.allow_tf32 = True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AUXILIARY BLOCKS (Private)
+# AUXILIARY BLOCKS
 # ─────────────────────────────────────────────────────────────────────────────
 
 class _EdgeFeatureEncoder(nn.Module):
@@ -178,18 +171,18 @@ class _SinkhornHead(nn.Module):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MAIN MODEL
+# MAIN PURE NEURAL MODEL
 # ─────────────────────────────────────────────────────────────────────────────
 
 class SinkhornCrossAttention(nn.Module):
     """
     Siamese Graph Matching Network with Cross-Attention and Sinkhorn.
-
-    Pipeline:
-        Raw Features → Encoder → GATv2 (shared) → CrossAttention → Sinkhorn → Alignment
-
-    Architecture follows the same pattern as gatv2_lite.py and itransformer.py:
-    sub-blocks as private classes, single public class with __init__ + forward.
+    
+    Pure PyTorch Neural Module adhering strictly to SOLID:
+    - Zero file I/O operations.
+    - Zero external infrastructure coupling.
+    - Clean tensor transformation pipeline:
+      Raw Features -> Feature Encoder -> Shared GATv2 -> CrossAttention -> Sinkhorn -> Alignment Matrix.
     """
 
     def __init__(
@@ -219,7 +212,7 @@ class SinkhornCrossAttention(nn.Module):
         self.cross_attn = _CrossAttentionBlock(d_model, n_heads, dropout)
         self.sinkhorn = _SinkhornHead(d_model, sinkhorn_iters, temperature)
 
-    def forward(self, source_data, target_data) -> torch.Tensor:
+    def forward(self, source_data: Any, target_data: Any) -> torch.Tensor:
         """
         Forward pass.
 
@@ -228,7 +221,7 @@ class SinkhornCrossAttention(nn.Module):
             target_data: PyG Data (Sensor Line Graph).
 
         Returns:
-            alignment: [N_source, N_target] doubly-stochastic matrix.
+            alignment: [N_source, N_target] doubly-stochastic assignment matrix.
         """
         # 1. Encode raw features
         src_x = self.encoder(source_data.x)
@@ -244,11 +237,11 @@ class SinkhornCrossAttention(nn.Module):
         # 4. Sinkhorn
         return self.sinkhorn(src_rich, tgt_rich)
 
-    # ─── Helpers ──────────────────────────────────────────────────────────
+    # ─── Pure Mathematical Post-Processing Helpers (Decoupled from I/O) ───
 
     @staticmethod
     def get_best_matches(alignment: torch.Tensor) -> List[Tuple[int, int, float]]:
-        """Extract best (source_idx, target_idx, confidence) from alignment."""
+        """Extracts best (source_idx, target_idx, confidence) from alignment matrix."""
         vals, idxs = alignment.max(dim=1)
         return [
             (i, idxs[i].item(), vals[i].item())
@@ -257,19 +250,7 @@ class SinkhornCrossAttention(nn.Module):
 
     @staticmethod
     def alignment_loss(predicted: torch.Tensor, ground_truth: torch.Tensor) -> torch.Tensor:
-        """Cross-entropy on alignment rows (each row is a classification)."""
+        """Cross-entropy on alignment rows (classification loss criterion)."""
         gt_labels = ground_truth.argmax(dim=1)
         log_pred = torch.log(predicted + 1e-10)
         return F.nll_loss(log_pred, gt_labels)
-
-    # ─── Diploma (Safetensors Persistence) ────────────────────────────────
-
-    def save_diploma(self, path: str):
-        """Save trained weights as .safetensors."""
-        state = {k: v.contiguous() for k, v in self.state_dict().items()}
-        save_file(state, path)
-
-    def load_diploma(self, path: str, device: str = "cpu"):
-        """Load trained weights from .safetensors."""
-        state = load_file(path, device=device)
-        self.load_state_dict(state)
