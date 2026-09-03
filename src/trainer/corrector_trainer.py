@@ -25,7 +25,7 @@ from typing import Dict, Optional, Any
 from torch.amp import autocast, GradScaler
 
 from src.interfaces.trainers import ICorrectorTrainer
-from src.models.pi_vae_tcn import PIVAETCN
+from src.models.pi_dvae_tcn import PIDVAETCN
 from src.utils.normalization import TensorNormalizer
 from src.utils.convergence_tracker import MarginalConvergenceTracker
 
@@ -34,21 +34,26 @@ logger = logging.getLogger("Synapse.CorrectorTrainer")
 
 class CorrectorTrainer(ICorrectorTrainer):
     """
-    Dedicated Training Routine & Optimizer for Corrector PI-VAE-TCN Models.
-    Manages physics-informed losses, KL divergence, and marginal convergence tracking.
+    Dedicated Training Routine & Optimizer for Corrector PI-DVAE-TCN Models.
+    Manages explicit DAE corruption, physics-informed losses, KL divergence, and marginal convergence tracking.
     """
 
     def __init__(
         self,
-        model: PIVAETCN,
+        model: PIDVAETCN,
         learning_rate: float = 1e-3,
         physics_weight: float = 0.1,
+        noise_std: float = 0.08,
+        spike_prob: float = 0.015,
         device: Optional[torch.device] = None
     ):
         self.model = model
         self.learning_rate = learning_rate
         self.physics_weight = physics_weight
+        self.noise_std = noise_std
+        self.spike_prob = spike_prob
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
 
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
         self.scaler = GradScaler('cuda' if self.device.type == 'cuda' else 'cpu', enabled=(self.device.type == 'cuda'))
@@ -61,7 +66,7 @@ class CorrectorTrainer(ICorrectorTrainer):
 
     def train_step(self, batch_data: Any) -> float:
         """
-        Single training step with Z-Score normalization and PINN loss terms.
+        Single training step with explicit DAE corruption, Z-Score normalization, and PINN loss terms.
         """
         self.model.train()
 
@@ -76,13 +81,23 @@ class CorrectorTrainer(ICorrectorTrainer):
         batch_data = batch_data.to(self.device)
         batch_data = TensorNormalizer.sanitize(batch_data)
 
+        # 1. Clean normalized target
         batch_data_norm, mean, std = TensorNormalizer.zscore_norm(batch_data, seq_dim=2)
+
+        # 2. Explicit DAE Corruption (Gaussian jitter + sensor spikes)
+        noise = torch.randn_like(batch_data_norm) * self.noise_std
+        spike_mask = (torch.rand_like(batch_data_norm) < self.spike_prob).float()
+        spike_noise = (torch.rand_like(batch_data_norm) * 2.0 - 1.0) * spike_mask
+        corrupted_input = batch_data_norm + noise + spike_noise
 
         self.optimizer.zero_grad()
         device_type = self.device.type if self.device.type != 'mps' else 'cpu'
 
         with autocast(device_type=device_type, enabled=(self.device.type == 'cuda')):
-            recon_x_norm, mu, logvar = self.model(batch_data_norm)
+            # Feed corrupted input through model
+            recon_x_norm, mu, logvar = self.model(corrupted_input)
+            
+            # Reconstruction target is the CLEAN ground truth
             recon_loss = torch.nn.functional.mse_loss(recon_x_norm, batch_data_norm, reduction='mean')
 
             logvar_clamped = torch.clamp(logvar, min=-10.0, max=5.0)

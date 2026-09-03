@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
-# File: src/models/pi_vae_tcn.py
+# File: src/models/pi_dvae_tcn.py
 # Author: Gabriel Moraes
 # Date: 2026-08-17
 
@@ -28,14 +28,14 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
 
-class PIVAETCN(nn.Module):
+class PIDVAETCN(nn.Module):
     """
-    Pure Variational Autoencoder with Temporal Convolutional Network backbone (VAE-TCN).
+    Physics-Informed Denoising Variational Autoencoder with Temporal Convolutional Network backbone (PI-DVAE-TCN).
     
-    A clean neural architecture responsible exclusively for:
+    A clean neural architecture for sensor noise removal, robust latent modeling, and trajectory correction:
     1. Temporal Encoder: Dilated Causal TCN compresses time series into latent representations.
     2. Stochastic Latent Manifold: Reparameterization (Mu, LogVar) -> z ~ N(mu, sigma^2).
-    3. Temporal Decoder: Symmetrical Causal TCN reconstructs the signal.
+    3. Temporal Decoder: Symmetrical Causal TCN reconstructs the clean physical signal.
     
     Adheres strictly to SOLID: pure computational graph, zero hardcoded training losses.
     """
@@ -141,4 +141,8 @@ class PIVAETCN(nn.Module):
         from src.physics.traffic_loss import TrafficPhysicsLoss
         engine = self.physics_engine or TrafficPhysicsLoss(max_acceleration=self.max_acceleration)
         return engine.compute_losses(recon, orig_x=orig_x)
+
+
+# Backward compatibility alias
+PIVAETCN = PIDVAETCN
 

@@ -22,7 +22,7 @@ import pytest
 import torch
 import numpy as np
 
-from src.models.pi_vae_tcn import PIVAETCN
+from src.models.pi_dvae_tcn import PIDVAETCN
 from src.models.pino_traffic import PINOTrafficFlow1D, SpectralFeatureExtractor
 from src.models.neuro_symbolic import NeuroSymbolicModel
 from src.models.itransformer import iTransformer

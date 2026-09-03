@@ -37,8 +37,8 @@ class CorrectorAgent(BaseAgent):
     Pure Orchestrator Architecture (SOLID Compliant):
     - Single Responsibility: Manages physics-informed denoising and golden dataset generation.
     - Delegations:
-      -> PI-VAE Inference & Normalization: ICorrectorPipeline (src/pipeline/corrector_pipeline.py)
-      -> PI-VAE Convergence & Training: ICorrectorTrainer (src/trainer/corrector_trainer.py)
+      -> PI-DVAE Inference & Normalization: ICorrectorPipeline (src/pipeline/corrector_pipeline.py)
+      -> PI-DVAE Convergence & Training: ICorrectorTrainer (src/trainer/corrector_trainer.py)
     """
 
     def __init__(

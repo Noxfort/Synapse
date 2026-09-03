@@ -91,7 +91,7 @@ The **Modular Adaptive Reasoning Kernel with Variational Attention & Recurrent T
 | :--- | :--- | :--- | :--- |
 | **PINO-Traffic** | Continuum Operator | Fourier Neural Operator (FNO) + Lighthill-Whitham-Richards (LWR) PDE Constraints | Physics-informed macroscopic traffic flow simulation and shockwave modeling across road networks. |
 | **PI-DeepONet** | Continuous Estimator | Physics-Informed Deep Operator Network with dual Branch/Trunk architectures | Solves infinite-dimensional continuous velocity and density fields over variable spatio-temporal domains. |
-| **PI-VAE-TCN** | Corrector Agent | Variational Autoencoder with Dilated Causal Convolutions & Kinetic Loss | Filters sensor noise and reconstructs missing local temporal trajectories with physical conservation guarantees. |
+| **PI-DVAE-TCN** | Corrector Agent | Denoising Variational Autoencoder with Dilated Causal Convolutions & Kinetic Loss | Filters sensor noise, eliminates measurement jitter, and reconstructs clean trajectories with physical conservation guarantees. |
 | **iTransformer** | Fuser Agent | Inverted Multi-Variate Transformer with Spatio-Temporal Cross-Attention | Global temporal fusion treating variates as tokens, cross-attending with spatial graph embeddings. |
 | **GATv2 Lite / Diffusion**| Coordinator Agent | Dynamic Graph Attention Networks v2 with Spatial Diffusion Kernel | Captures non-Euclidean spatial relationships, congestion propagation, and arterial bottlenecks across city topology. |
 | **Sinkhorn Cross-Attention**| Cartographer Agent | Entropic Optimal Transport (Sinkhorn Algorithm) + Cross-Attention | Performs fast, differentiable map-matching, aligning noisy GPS probe traces to exact street graph edges. |

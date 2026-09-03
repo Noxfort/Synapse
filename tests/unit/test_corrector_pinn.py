@@ -22,20 +22,20 @@ import pytest
 import torch
 import numpy as np
 
-from src.models.pi_vae_tcn import PIVAETCN
+from src.models.pi_dvae_tcn import PIDVAETCN
 from src.agents.corrector_agent import CorrectorAgent
 from src.physics.traffic_loss import TrafficPhysicsLoss
 
 
-def test_pi_vae_tcn_forward_pass_and_shapes():
-    """Verifies that PIVAETCN forward pass produces matching output shapes."""
+def test_pi_dvae_tcn_forward_pass_and_shapes():
+    """Verifies that PIDVAETCN forward pass produces matching output shapes."""
     batch_size = 4
     channels = 3
     seq_len = 16
     hidden_channels = 32
     latent_channels = 16
 
-    model = PIVAETCN(
+    model = PIDVAETCN(
         input_channels=channels,
         hidden_channels=hidden_channels,
         latent_channels=latent_channels,
@@ -50,9 +50,9 @@ def test_pi_vae_tcn_forward_pass_and_shapes():
     assert logvar.shape == (batch_size, latent_channels, seq_len)
 
 
-def test_pi_vae_tcn_forward_with_residuals():
+def test_pi_dvae_tcn_forward_with_residuals():
     """Verifies that forward pass can return physics residuals directly."""
-    model = PIVAETCN(input_channels=3, hidden_channels=16, latent_channels=8)
+    model = PIDVAETCN(input_channels=3, hidden_channels=16, latent_channels=8)
     x = torch.rand(2, 3, 10)
     recon, mu, logvar, residuals = model(x, return_physics_residuals=True)
 
@@ -61,7 +61,7 @@ def test_pi_vae_tcn_forward_with_residuals():
     assert residuals["total_physics_loss"].item() >= 0.0
 
 
-def test_pi_vae_tcn_physics_residuals_computation():
+def test_pi_dvae_tcn_physics_residuals_computation():
     """Verifies that TrafficPhysicsLoss produces all physical loss terms."""
     physics_engine = TrafficPhysicsLoss(max_acceleration=5.0)
 
@@ -83,7 +83,7 @@ def test_pi_vae_tcn_physics_residuals_computation():
     assert residuals["loss_bounds"].item() == 0.0  # All values are strictly positive
 
 
-def test_pi_vae_tcn_kinematic_penalty_on_unphysical_acceleration():
+def test_pi_dvae_tcn_kinematic_penalty_on_unphysical_acceleration():
     """Verifies that an unphysical jump in speed generates higher kinematic loss."""
     physics_engine = TrafficPhysicsLoss(max_acceleration=5.0)
 
@@ -124,3 +124,29 @@ def test_corrector_agent_denoise_forward():
 
     assert denoised_seq.shape == (20, 3)
     assert not np.isnan(denoised_seq).any()
+
+
+def test_corrector_trainer_dae_explicit_corruption():
+    """Verifies that CorrectorTrainer configures and executes explicit DAE noise injection."""
+    from src.trainer.corrector_trainer import CorrectorTrainer
+
+    model = PIDVAETCN(input_channels=2, hidden_channels=16, latent_channels=8)
+    trainer = CorrectorTrainer(
+        model=model,
+        learning_rate=1e-3,
+        physics_weight=0.05,
+        noise_std=0.10,
+        spike_prob=0.05
+    )
+
+    assert trainer.noise_std == 0.10
+    assert trainer.spike_prob == 0.05
+
+    batch = np.random.uniform(10.0, 50.0, (4, 16, 2)).astype(np.float32)
+    loss = trainer.train_step(batch)
+
+    assert isinstance(loss, float)
+    assert not np.isnan(loss)
+    assert not np.isinf(loss)
+    assert loss < 1e5
+

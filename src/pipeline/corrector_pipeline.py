@@ -24,7 +24,7 @@ import logging
 from typing import Any, Optional
 from torch.amp import autocast
 
-from src.models.pi_vae_tcn import PIVAETCN
+from src.models.pi_dvae_tcn import PIDVAETCN
 from src.utils.normalization import TensorNormalizer
 
 logger = logging.getLogger("Synapse.CorrectorPipeline")
@@ -33,12 +33,12 @@ logger = logging.getLogger("Synapse.CorrectorPipeline")
 class CorrectorPipeline:
     """
     Dedicated Neural Pipeline for Physics-Informed Denoising and Golden Dataset Generation.
-    Encapsulates PI-VAE-TCN execution with dynamic Z-Score normalization.
+    Encapsulates PI-DVAE-TCN execution with dynamic Z-Score normalization.
     """
 
     def __init__(
         self,
-        model: Optional[PIVAETCN] = None,
+        model: Optional[PIDVAETCN] = None,
         input_dim: int = 1,
         hidden_dim: int = 64,
         latent_dim: int = 32,
@@ -52,7 +52,7 @@ class CorrectorPipeline:
         if model is not None:
             self.model = model
         else:
-            self.model = PIVAETCN(
+            self.model = PIDVAETCN(
                 input_channels=input_dim,
                 hidden_channels=hidden_dim,
                 latent_channels=latent_dim,

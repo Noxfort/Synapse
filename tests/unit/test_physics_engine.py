@@ -41,7 +41,7 @@ from src.physics.traffic_loss import TrafficPhysicsLoss
 from src.infrastructure.safetensors_repository import SafetensorsRepository
 from src.strategies.semantic_clustering import CosineSemanticClusterer
 from src.models.pino_traffic import PINOTrafficFlow1D
-from src.models.pi_vae_tcn import PIVAETCN
+from src.models.pi_dvae_tcn import PIDVAETCN
 from src.models.wavelet_ae_occ import WaveletAEOCC
 from src.models.neuro_symbolic import NeuroSymbolicModel
 from src.models.distilroberta import DistilRobertaSemanticExtractor
@@ -205,9 +205,9 @@ class TestModelsRefactoredPINN:
         assert refined.shape == (2, 5, 32)
         assert "physics_residual" in metrics
 
-    def test_pivae_tcn_with_injected_physics(self):
+    def test_pidvae_tcn_with_injected_physics(self):
         engine = TrafficPhysicsLoss(max_acceleration=8.0)
-        model = PIVAETCN(input_channels=3, hidden_channels=16, latent_channels=8, physics_loss_engine=engine)
+        model = PIDVAETCN(input_channels=3, hidden_channels=16, latent_channels=8, physics_loss_engine=engine)
         x = torch.randn(2, 3, 24).abs()  # positive inputs
         recon, mu, logvar, residuals = model(x, return_physics_residuals=True)
         

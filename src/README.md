@@ -70,7 +70,7 @@ src/
 ### 2. `models/` — Pure PyTorch Neural Operators & Transformers
 - **`pino_traffic.py`**: Physics-Informed Neural Operator utilizing 1D/2D Fourier Spectral Convolutions and Lighthill-Whitham-Richards (LWR) conservation laws $\frac{\partial \rho}{\partial t} + \frac{\partial q}{\partial x} = 0$.
 - **`pi_deeponet.py`**: Dual-network Branch/Trunk Deep Operator Network for continuous spatial-temporal velocity/density field interpolation.
-- **`pi_vae_tcn.py`**: Physics-Informed Variational Autoencoder with Dilated Causal Convolutions for generative noise filtering.
+- **`pi_dvae_tcn.py`**: Physics-Informed Denoising Variational Autoencoder with Dilated Causal Convolutions for generative noise filtering and trajectory correction.
 - **`itransformer.py` & `itransformer_lite.py`**: Inverted Multi-Variate Transformer embedding time-series as tokens with spatial cross-attention.
 - **`gatv2_lite.py` & `diffusion_gatv2.py`**: Dynamic Graph Attention Networks with spatial graph diffusion.
 - **`sinkhorn_cross_attention.py`**: Differentiable Optimal Transport map matcher.

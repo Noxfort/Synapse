@@ -42,7 +42,7 @@ class IImputerTrainer(IStepTrainable, IDeviceMovable, Protocol):
 
 @runtime_checkable
 class ICorrectorTrainer(IStepTrainable, IDeviceMovable, Protocol):
-    """Contract for Corrector PI-VAE training and convergence routines."""
+    """Contract for Corrector PI-DVAE training and convergence routines."""
     def train(self, data: Any, epochs: int = 100, batch_size: int = 64, **kwargs: Any) -> Dict[str, list]: ...
 
 
