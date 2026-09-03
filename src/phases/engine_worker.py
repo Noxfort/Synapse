@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -17,10 +17,6 @@
 # File: src/phases/engine_worker.py
 # Author: Gabriel Moraes
 # Date: 2026-04-27
-#
-# SOLID Refactoring — Extracted from runtime_launcher.py
-# [SRP] This module has ONE responsibility: manage the Neural Inference
-#       thread lifecycle (heartbeat, signal wiring, start/stop).
 
 import traceback
 from typing import Optional, TYPE_CHECKING
@@ -31,8 +27,13 @@ from src.factories.engine_component_factory import EngineComponentFactory
 
 if TYPE_CHECKING:
     from src.engine.inference_engine import InferenceEngine
+    from src.engine.data_flow_router import DataFlowRouter
     from src.services.linguist_service import LinguistService
     from src.workers.xai_worker import XAIWorker
+    from src.managers.xai_manager import XAIManager
+    from src.workers.ingestion_worker import IngestionWorker
+    from src.managers.graph_manager import GraphManager
+    from src.services.historical_manager import HistoricalManager
 
 
 class EngineWorker(QObject):
@@ -43,11 +44,7 @@ class EngineWorker(QObject):
     - Receive pre-built components from EngineComponentFactory (DIP)
     - Wire inter-component signals
     - Drive the heartbeat timer (1s neural inference cycles)
-    - Manage child thread lifecycles (Linguist T4, XAI T3)
-
-    This class was extracted from runtime_launcher.py to satisfy SRP —
-    RuntimeLauncher only orchestrates threads, this class only runs
-    the neural inference loop.
+    - Manage child thread lifecycles (Linguist T4, XAI T3) and subsystem boots
     """
 
     # --- Proxy signals (bubbled up to RuntimeLauncher) ---
@@ -67,15 +64,15 @@ class EngineWorker(QObject):
     xai_result_received = pyqtSignal(dict)
 
     def __init__(self, factory: EngineComponentFactory, fenix_service):
-        """
-        Args:
-            factory: Pre-configured EngineComponentFactory (DIP — injected).
-            fenix_service: FenixService for health monitoring.
-        """
         super().__init__()
         self._factory = factory
         self.fenix_service = fenix_service
         self.inference_engine: Optional['InferenceEngine'] = None
+        self.data_flow_router: Optional['DataFlowRouter'] = None
+        self.xai_manager: Optional['XAIManager'] = None
+        self.ingestion: Optional['IngestionWorker'] = None
+        self.graph_manager: Optional['GraphManager'] = None
+        self.historical_manager: Optional['HistoricalManager'] = None
         self._heartbeat: Optional[QTimer] = None
 
         # Thread 4 — Linguist (Standby)
@@ -89,9 +86,6 @@ class EngineWorker(QObject):
     def initialize(self):
         """
         Called when the QThread starts. Runs ENTIRELY on the worker thread.
-
-        Construction is delegated to the factory. This method only
-        wires signals and starts the heartbeat timer.
         """
         try:
             self.log_message.emit("[Launcher] ⏳ Building AI Engine on worker thread...")
@@ -100,14 +94,19 @@ class EngineWorker(QObject):
             components = self._factory.build()
 
             self.inference_engine = components.inference_engine
+            self.data_flow_router = components.data_flow_router
             self._xai_worker = components.xai_worker
+            self.xai_manager = components.xai_manager
             self._linguist_service = components.linguist_service
+            self.ingestion = components.ingestion
+            self.graph_manager = components.graph_manager
+            self.historical_manager = components.historical_manager
 
             # ── 2. Wire XAI signals (Thread 3 — On-Demand) ────────────
             self._xai_worker.result_ready.connect(self.xai_result_received)
             self.log_message.emit("[XAI] On-demand worker ready (ephemeral threads).")
 
-            # ── 3. Wire neural output signals (Thread 2) ──────────────
+            # ── 3. Wire neural & data output signals (Thread 2) ───────
             self._wire_engine_signals()
 
             # FENIX Health Check
@@ -119,7 +118,14 @@ class EngineWorker(QObject):
             self._start_linguist()
 
             # ── 5. Boot subsystems ────────────────────────────────────
-            self.inference_engine.initialize_system()
+            if self.ingestion:
+                self.ingestion.start()
+
+            if self.graph_manager:
+                self.graph_manager.rebuild_graph()
+
+            if self.historical_manager and not self.historical_manager.is_ready:
+                self.historical_manager.load_data()
 
             # Heartbeat ON THIS THREAD (drives neural inference)
             self._heartbeat = QTimer()
@@ -138,8 +144,10 @@ class EngineWorker(QObject):
     # =========================================================================
 
     def _wire_engine_signals(self):
-        """Connects InferenceEngine output signals to this worker's proxies."""
-        self.inference_engine.data_processed.connect(self.engine_data_processed)
+        """Connects data and inference engine output signals to worker proxies."""
+        if self.data_flow_router:
+            self.data_flow_router.data_processed.connect(self.engine_data_processed)
+
         self.inference_engine.global_cycle_results.connect(self.engine_global_results)
         self.inference_engine.kinetic_data_ready.connect(self.kinetic_data_ready)
         self.inference_engine.audit_update.connect(self.audit_update)
@@ -177,9 +185,9 @@ class EngineWorker(QObject):
         if self._heartbeat:
             self._heartbeat.stop()
 
-        # Stop neural engine
-        if self.inference_engine:
-            self.inference_engine.stop()
+        # Stop ingestion
+        if self.ingestion:
+            self.ingestion.stop()
 
         # Stop Linguist thread (Thread 4)
         if self._linguist_thread:

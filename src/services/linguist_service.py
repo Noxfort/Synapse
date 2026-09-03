@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -16,57 +16,81 @@
 #
 # File: src/services/linguist_service.py
 # Author: Gabriel Moraes
-# Date: 2026-02-16
+# Date: 2026-08-20
 
-import torch
+from typing import Dict, Optional, List, Any
 import numpy as np
-from typing import Dict, Optional, List
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
-# --- Domain ---
+# --- Domain & Workers ---
 from src.domain.app_state import AppState
 from src.domain.entities import SourceStatus, DataSource
 from src.workers.ingestion_worker import IngestionWorker
 
-# --- Agents & Factories ---
+# --- Interfaces (DIP / ISP) ---
+from src.interfaces.quarantine import (
+    ISeriesExtractorPipeline,
+    ISemanticClassifier,
+    ISensorPhysicsValidator,
+    IKnowledgeTransfer,
+)
+
+# --- Concrete Implementations (Defaults) ---
+from src.pipeline.series_extractor_pipeline import SeriesExtractorPipeline
+from src.services.semantic_classifier import SemanticClassifier
+from src.physics.sensor_physical_validator import SensorPhysicalValidator
+from src.services.knowledge_transfer_service import KnowledgeTransferService
 from src.factories.agent_factory import AgentFactory
-from src.agents.linguist_agent import LinguistAgent
-from src.agents.specialist_agent import SpecialistAgent
 
 # --- Utils ---
-from src.utils.logging_setup import logger
+from src.utils.logging_setup import get_logger
+
+logger = get_logger("LinguistService")
+
 
 class LinguistService(QObject):
     """
     The 'Neuro-Symbolic' Gatekeeper Service.
     
-    Refactored V2 (Standby Thread Architecture):
-    - Lives in its own dedicated QThread.
-    - `run_check()` is a @pyqtSlot invoked via cross-thread signal from the Neural thread.
-    - When no quarantined sources exist, naturally returns and the thread idles (standby).
-    - When triggered, wakes up, processes all quarantine sources, then returns to standby.
-    
-    Orchestration Logic:
-    1.  **Collection Loop:** Accumulates sensor samples (chunks of 60).
-    2.  **Grammar Acquisition:** Attempts to train the LinguistAgent (TCN-AE) to reconstruct the signal.
-    3.  **Physics Validation:** Once the grammar is learned, the 'Symbolic' layer validates physical laws.
-    4.  **Knowledge Transfer:** If valid, 'teaches' the SpecialistAgent (TCN) how to read this source.
+    Pure Orchestrator Architecture (SOLID Compliant):
+    - [SRP] Exclusively coordinates the quarantine state machine workflow.
+    - [OCP] Data parsing, semantic inference, physics validation and knowledge transfer
+            are delegated to injected strategy components.
+    - [DIP] Relies on abstract interfaces (ISeriesExtractorPipeline, ISemanticClassifier,
+            ISensorPhysicsValidator, IKnowledgeTransfer).
     """
-    
+
     # Signal emitted when a source is successfully analyzed and promoted
     update_signal = pyqtSignal(str, str, float)
 
-    def __init__(self, app_state: AppState, ingestion_worker: IngestionWorker, agent_factory: AgentFactory):
+    def __init__(
+        self,
+        app_state: AppState,
+        ingestion_worker: IngestionWorker,
+        agent_factory: AgentFactory,
+        series_extractor: Optional[ISeriesExtractorPipeline] = None,
+        semantic_classifier: Optional[ISemanticClassifier] = None,
+        physics_validator: Optional[ISensorPhysicsValidator] = None,
+        knowledge_transfer: Optional[IKnowledgeTransfer] = None,
+    ):
         super().__init__()
         self.app_state = app_state
         self.ingestion = ingestion_worker
         self.agent_factory = agent_factory
-        
-        # Memory to track training attempts per source
-        # Key: source_id, Value: attempt_count
+
+        # Injected Strategy Components (DIP / OCP)
+        self.series_extractor = series_extractor or SeriesExtractorPipeline()
+        self.semantic_classifier = semantic_classifier or SemanticClassifier()
+        self.physics_validator = physics_validator or SensorPhysicalValidator(
+            semantic_classifier=self.semantic_classifier,
+            app_state=self.app_state
+        )
+        self.knowledge_transfer = knowledge_transfer or KnowledgeTransferService()
+
+        # Memory to track training attempts per source (Key: source_id, Value: attempt_count)
         self.learning_attempts: Dict[str, int] = {}
-        
-        # Thresholds (5 to 10 samples PINN validation)
+
+        # Thresholds (5 to 10 samples validation)
         self.SAMPLE_CHUNK_SIZE = 5
         self.MAX_ATTEMPTS = 2  # Allows up to 10 samples total (attempt 1 at 5, attempt 2 at 10)
         self.GRAMMAR_LOSS_THRESHOLD = 0.5  # PINN combined loss limit to consider "Learned"
@@ -80,132 +104,151 @@ class LinguistService(QObject):
         """
         pipeline = self.ingestion.get_pipeline()
         sources = self.app_state.get_all_data_sources()
-        
+
         for source in sources:
             if source.status == SourceStatus.QUARANTINE:
                 self._process_quarantine_source(source, pipeline)
 
-    def _process_quarantine_source(self, source: DataSource, pipeline):
+    def _process_quarantine_source(self, source: DataSource, pipeline: Any):
         """
-        Executes the logic: Collect (5-10 samples) -> Learn (TCN-PINN) -> Validate Physics -> Teach.
+        Executes the quarantine lifecycle:
+        Collect -> Discover Schema & Semantics -> Train PINN -> Validate Physics -> Teach TCN -> Promote.
         """
         # 1. Check Data Availability (5 samples initially, 10 on retry)
         current_attempt = self.learning_attempts.get(source.id, 0)
         required_samples = self.SAMPLE_CHUNK_SIZE * (current_attempt + 1)
-        
+
         if not pipeline.has_enough_data(source.id, required_samples):
             return  # Wait for ingestion buffer
 
         data_chunk = pipeline.get_quarantine_data(source.id)
-        
-        logger.info(f"[Linguist] 🔄 Attempt {current_attempt+1}: Analyzing {len(data_chunk)} samples from '{source.name}' with TCN-PINN...")
+        data_np = self.series_extractor.extract(data_chunk)
 
-        # 2. Summon the Linguist Agent (The Learner)
+        # 2. Discover Semantics and Modality
+        sem_type, unit, confidence = self.semantic_classifier.classify(source, data_np, data_chunk)
+
+        logger.info(
+            f"🔬 [Linguist] {len(data_chunk)} amostras coletadas para '{source.name}' ({source.id}). "
+            f"Modalidade detectada: '{sem_type}' [{unit}]. Iniciando treino PINN e validação física (Tentativa {current_attempt+1})..."
+        )
+
+        # 3. Summon the Linguist Agent (The Learner)
         linguist = self.agent_factory.get_or_create_linguist(source.id)
-        
-        # Train on the current chunk with PINN loss
-        loss = linguist.train_step(data_chunk)
-        
-        # 3. Decision Gate: Did we learn the signal grammar and physics?
+
+        # Train on current chunk with local convergence loop and modality conditioning
+        loss = linguist.train_step(data_np.tolist(), epochs=10, semantic_type=sem_type)
+
+        # 4. Decision Gate: Did we learn the signal grammar and physics?
         if loss < self.GRAMMAR_LOSS_THRESHOLD:
-            logger.info(f"[Linguist] 🧠 Signal Grammar & Dynamics Learned! (PINN Loss: {loss:.4f} < {self.GRAMMAR_LOSS_THRESHOLD})")
-            
-            # 4. Physics Validation (The Symbolic + PINN Check)
-            if self._validate_physics(source, data_chunk, linguist):
-                # 5. Teach the Specialist (Knowledge Transfer)
-                self._teach_specialist(source, linguist)
-                
-                # 6. Promote
-                self._promote_source(source, pipeline)
+            logger.info(
+                f"🧠 [Linguist] Gramática do sinal aprendida com sucesso! "
+                f"(Perda PINN: {loss:.4f} < Limite {self.GRAMMAR_LOSS_THRESHOLD}). Validando Leis da Física..."
+            )
+
+            # 5. Physics Validation (Symbolic + Modality-Conditioned PINN Check)
+            if self.physics_validator.validate(source, data_np, data_chunk, linguist):
+                logger.info(
+                    f"⚖️ [Linguist: Física] ✅ Consistência física APROVADA para '{source.name}' "
+                    f"(Modalidade: {sem_type} [{unit}])."
+                )
+
+                # 6. Teach the Specialist (MLOps Knowledge Transfer, Extractor Attachment & TCN Warmup)
+                specialist = self.agent_factory.get_or_create_specialist(source.id)
+                self.knowledge_transfer.transfer(
+                    linguist,
+                    specialist,
+                    data_series=data_np,
+                    extractor=self.series_extractor,
+                    semantic_type=sem_type,
+                    unit=unit
+                )
+
+                # 7. Promote to Active
+                self._promote_source(source, pipeline, data_np, data_chunk, sem_type, unit, confidence)
             else:
                 # Physics failed despite good grammar -> Probable Spoofing / Hallucination
-                self._reject_source(source, reason="Physics Violation / Hallucination Detected by PINN")
-        
+                self._reject_source(source, reason=f"Violação das restrições físicas para a modalidade '{sem_type}'.")
         else:
             # Grammar not learned yet
             self._handle_learning_failure(source, pipeline, loss)
 
-    def _handle_learning_failure(self, source: DataSource, pipeline, loss: float):
-        """
-        Logic for when the agent fails to understand the signal pattern or physics diverges.
-        """
+    def _handle_learning_failure(self, source: DataSource, pipeline: Any, loss: float):
+        """Logic for when the agent fails to understand the signal pattern or physics diverges."""
         attempts = self.learning_attempts.get(source.id, 0) + 1
         self.learning_attempts[source.id] = attempts
-        
+
         if attempts >= self.MAX_ATTEMPTS:
-            logger.warning(f"[Linguist] ❌ Failed to validate physics/grammar after 10 samples ({attempts} attempts). Signal rejected.")
-            self._reject_source(source, reason="Unlearnable / Non-Physical Pattern (High PINN Residual after 10 samples)")
+            logger.warning(
+                f"❌ [Linguist] Falha na validação física/gramatical após 10 amostras ({attempts} tentativas). Sinal rejeitado."
+            )
+            self._reject_source(source, reason="Padrão não físico / Não convergência do PINN após 10 amostras.")
         else:
-            logger.info(f"[Linguist] ⏳ Physics/Grammar calibrating (PINN Loss: {loss:.4f}). Requesting +{self.SAMPLE_CHUNK_SIZE} samples (up to 10).")
+            logger.info(
+                f"⏳ [Linguist] Calibrando física do sinal (Perda PINN: {loss:.4f}). "
+                f"Coletando mais +{self.SAMPLE_CHUNK_SIZE} amostras (total até 10)..."
+            )
             pipeline.extend_quarantine_buffer(source.id, self.SAMPLE_CHUNK_SIZE)
 
-    def _validate_physics(self, source: DataSource, data: List[float], agent: LinguistAgent) -> bool:
-        """
-        Uses the trained PINN Agent + Symbolic Rules to validate physical feasibility.
-        """
-        # A. Symbolic Sanity Checks (Rule-based)
-        data_np = np.array(data)
-        if np.min(data_np) < 0:
-            logger.warning(f"[Physics] Violation: Negative value detected in '{source.name}'.")
-            return False
-            
-        if np.mean(data_np) == 0 and np.var(data_np) == 0:
-             logger.warning(f"[Physics] Violation: Dead signal (Flatline).")
-             return False
-
-        # B. Neuro-PINN Validation (Anomaly & Physics Residual Detection)
-        analysis = agent.inference(data)
-        if analysis.get('is_anomaly', False) or analysis.get('physics_residual', 0.0) > 0.5:
-             logger.warning(
-                 f"[Physics/PINN] Violation: Semantic/Physical Inconsistency in '{source.name}' "
-                 f"(Physics Residual: {analysis.get('physics_residual', 0.0):.4f})."
-             )
-             return False
-             
-        return True
-
-    def _teach_specialist(self, source: DataSource, linguist: LinguistAgent):
-        """
-        Transfers the learned features (Encoder) from Linguist to Specialist.
-        This prepares the Specialist to 'read' the sensor immediately.
-        """
-        logger.info(f"[Linguist] 🎓 Teaching Specialist Agent how to read '{source.name}'...")
-        
-        # 1. Spawn/Get the Specialist for this node
-        specialist = self.agent_factory.get_or_create_specialist(source.id)
-        
-        # 2. Transfer Weights (The "Teaching")
-        # We copy the TCN Encoder weights from Linguist (Teacher) to Specialist (Student)
-        # Assuming both share a compatible TCN backbone structure
-        try:
-            # Extract encoder state
-            encoder_state = linguist.model.ae.encoder.state_dict()
-            
-            # Load into Specialist's TCN
-            # strict=False allows ignoring heads/decoders that differ
-            specialist.tcn.load_state_dict(encoder_state, strict=False)
-            
-            logger.info(f"[System] ✅ Knowledge Transfer Complete. Specialist is ready.")
-        except Exception as e:
-            logger.error(f"[System] ⚠️ Failed to transfer weights: {e}. Specialist will learn from scratch.")
-
-    def _promote_source(self, source: DataSource, pipeline):
-        """Final promotion to ACTIVE state."""
+    def _promote_source(
+        self,
+        source: DataSource,
+        pipeline: Any,
+        data_np: np.ndarray,
+        data_chunk: List[Any],
+        sem_type: str,
+        unit: str,
+        confidence: float
+    ):
+        """Final promotion to ACTIVE state after validation."""
         source.status = SourceStatus.ACTIVE
-        source.semantic_type = "Traffic Flow" # Determined by Linguist
-        source.confidence_score = 1.0
-        
+        source.semantic_type = sem_type
+        source.inferred_unit = unit
+        source.confidence_score = confidence
+
+        if len(data_np) > 0:
+            source.latest_value = float(data_np[-1])
+            self.app_state.update_source_value(source.id, source.latest_value)
+
         pipeline.promote_to_active(source.id)
-        self.update_signal.emit(source.name, "Traffic Flow", 1.0)
-        
+        self.update_signal.emit(source.name, sem_type, confidence)
+
+        # Persist updated source state through clean encapsulation
+        self._persist_source_state(source)
+
+        # Ephemeral Lifecycle: Deactivate and release the LinguistAgent from memory
+        if hasattr(self.agent_factory, "release_linguist"):
+            self.agent_factory.release_linguist(source.id)
+            logger.info(f"🛑 [Linguist] Agente Linguista de '{source.name}' ({source.id}) auto-desativado e liberado da memória (TCN Local operando autonomamente).")
+
+        logger.info(
+            f"🎉 [Linguist] 🟢 Sensor '{source.name}' ({source.id}) VALIDADO COM SUCESSO! "
+            f"Promovido para status ATIVO. [Modalidade: {sem_type} ({unit}) | Confiança: {confidence*100:.0f}%]"
+        )
+
         # Cleanup memory
         if source.id in self.learning_attempts:
             del self.learning_attempts[source.id]
 
     def _reject_source(self, source: DataSource, reason: str):
-        """Rejects the source, keeping it in Quarantine or banning it."""
+        """Rejects the source, keeping it out of the active ingestion pipeline."""
         logger.error(f"[System] ⛔ Source '{source.name}' REJECTED. Reason: {reason}")
-        # Reset attempts to allow future retry if the sensor is fixed
-        self.learning_attempts[source.id] = 0 
-        # Note: In a real system, we might set status to ERROR or BANNED.
-        # Here we leave in QUARANTINE but log the error.
+        source.status = SourceStatus.REJECTED
+        self.learning_attempts[source.id] = 0
+        self._persist_source_state(source)
+
+        # Ephemeral Lifecycle: Deactivate on rejection as well
+        if hasattr(self.agent_factory, "release_linguist"):
+            self.agent_factory.release_linguist(source.id)
+
+    def _persist_source_state(self, source: DataSource):
+        """Safely updates and persists the source state in the domain repository."""
+        if hasattr(self.app_state, "notify_source_updated"):
+            self.app_state.notify_source_updated(source)
+        elif hasattr(self.app_state, "sources"):
+            if hasattr(self.app_state.sources, "notify_source_updated"):
+                self.app_state.sources.notify_source_updated(source)
+            else:
+                if hasattr(self.app_state.sources, "source_added"):
+                    self.app_state.sources.source_added.emit(source)
+                if hasattr(self.app_state.sources, "save"):
+                    self.app_state.sources.save()

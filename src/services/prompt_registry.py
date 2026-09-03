@@ -1,112 +1,171 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
 # Copyright (C) 2026 Noxfort Systems
 #
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
 # File: src/services/prompt_registry.py
 # Author: Gabriel Moraes
 # Date: 2026-04-26
 
-import os
-import re
-import json
-from typing import Dict, List
+import logging
+from typing import Dict, List, Optional, Any, Callable
+
+# --- Interfaces (DIP / ISP) ---
+from src.interfaces.prompts import (
+    ITemplateLoader,
+    IPromptBuilder,
+    IResponseSanitizer,
+)
+
+# --- Concrete Sub-services (SRP) ---
+from src.services.template_loader import JSONTemplateLoader
+from src.services.prompt_formatter import ChatPromptBuilder, _SafeFormatter
+from src.services.response_sanitizer import ResponseSanitizer
+
+logger = logging.getLogger("PromptRegistry")
 
 
 class PromptRegistry:
     """
-    Single Responsibility: Load and resolve multilingual prompt templates
-    for the Jurist Agent (XAI / Legal Compliance) directly from JSON resources.
+    Pure Orchestrator & Unified Facade for SYNAPSE Prompt Engineering Subsystem.
     
-    Separates prompt engineering from LLM lifecycle and inference logic.
+    SOLID Architecture:
+    - [SRP] Orchestrates the prompt lifecycle by delegating specialized operations:
+            - ITemplateLoader: I/O, directory discovery, language resolution, caching.
+            - IPromptBuilder: Template variable interpolation and chat message construction.
+            - IResponseSanitizer: LLM response post-processing and reasoning tag stripping.
+    - [OCP] Open for new template sources (DB/Redis) or custom sanitizers without modifying this class.
+    - [LSP] Any sub-service implementing ITemplateLoader, IPromptBuilder, or IResponseSanitizer can be substituted.
+    - [ISP] Independent interfaces allow clients to consume only the sub-services they need.
+    - [DIP] Relies on abstract Protocols and supports Dependency Injection.
     """
 
-    _CACHE = {}
+    # Shared default strategy components
+    _default_loader: ITemplateLoader = JSONTemplateLoader()
+    _default_builder: IPromptBuilder = ChatPromptBuilder()
+    _default_sanitizer: IResponseSanitizer = ResponseSanitizer()
+
+    def __init__(
+        self,
+        loader: Optional[ITemplateLoader] = None,
+        builder: Optional[IPromptBuilder] = None,
+        sanitizer: Optional[IResponseSanitizer] = None,
+    ):
+        """
+        Initializes an instance-based PromptRegistry with optional dependency injection.
+        """
+        self.loader: ITemplateLoader = loader or JSONTemplateLoader()
+        self.builder: IPromptBuilder = builder or ChatPromptBuilder()
+        self.sanitizer: IResponseSanitizer = sanitizer or ResponseSanitizer()
+
+    # =========================================================================
+    # EXTENSION & LOADER APIS (Delegated to ITemplateLoader)
+    # =========================================================================
 
     @classmethod
-    def _load_template(cls, language: str) -> Dict[str, str]:
-        """Loads a Jurist prompt template from JSON, caching it in memory."""
-        lang_key = cls._resolve_language(language)
-        
-        if lang_key in cls._CACHE:
-            return cls._CACHE[lang_key]
-
-        # Resolve path to src/templates/jurist_{lang_key}.json
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        file_path = os.path.join(base_dir, "templates", f"jurist_{lang_key}.json")
-        
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                template = json.load(f)
-                cls._CACHE[lang_key] = template
-                return template
-        except Exception as e:
-            # Fallback to PT-BR if file doesn't exist
-            print(f"[PromptRegistry] Warning: Could not load {file_path}: {e}")
-            if lang_key != "pt_br":
-                return cls._load_template("pt_br")
-            
-            # Absolute worst-case fallback
-            return {
-                "system": "Você é o Agente Jurista do sistema SYNAPSE. Sua função é analisar dados técnicos de tráfego e emitir laudos explicativos baseados no Código de Trânsito Brasileiro (CTB). Seja técnico, direto e jurídico. Justifique as decisões da IA com base nos vetores fornecidos.\\nIMPORTANTE: Você DEVE primeiro pensar passo-a-passo usando tags <think> e </think>, e em seguida fornecer sua resposta final.",
-                "user": "Relatório de Incidente:\\n- Fonte: {source}\\n- Estado Detectado: {status}\\n- Dados Numéricos: {values}\\n\\nAnalise este cenário. Se houver anomalia, cite o artigo do CTB aplicável e sugira a ação de controle."
-            }
+    def register_language(cls, alias: str, canonical_code: str) -> None:
+        """Extends supported languages without modifying the codebase (OCP)."""
+        cls._default_loader.register_language(alias, canonical_code)
 
     @classmethod
-    def build_messages(cls, source: str, status: str, values: list, language: str = "pt_BR") -> List[Dict[str, str]]:
+    def register_template(cls, template_name: str, language: str, template: Dict[str, str]) -> None:
+        """Registers an in-memory template for an agent or domain."""
+        cls._default_loader.register_template(template_name, language, template)
+
+    @classmethod
+    def register_fallback(cls, template_name: str, fallback_template: Dict[str, str]) -> None:
+        """Registers a domain fallback template when JSON files cannot be found."""
+        cls._default_loader.register_fallback(template_name, fallback_template)
+
+    @classmethod
+    def clear_cache(cls) -> None:
+        """Clears all cached in-memory templates."""
+        cls._default_loader.clear_cache()
+
+    @classmethod
+    def _resolve_language(cls, language: str) -> str:
+        """Maps arbitrary language codes or locale strings to canonical template keys."""
+        return cls._default_loader.resolve_language(language)
+
+    @classmethod
+    def _get_prompt_dirs(cls, custom_dir: Optional[str] = None) -> List[str]:
+        """Returns candidate directories containing prompt JSON templates."""
+        if hasattr(cls._default_loader, "get_prompt_dirs"):
+            return cls._default_loader.get_prompt_dirs(custom_dir)
+        return []
+
+    @classmethod
+    def load_template(
+        cls,
+        template_name: str = "jurist",
+        language: str = "pt_BR",
+        custom_dir: Optional[str] = None
+    ) -> Dict[str, str]:
+        """Loads a prompt template from memory cache or JSON resource files."""
+        return cls._default_loader.load_template(
+            template_name=template_name,
+            language=language,
+            custom_dir=custom_dir
+        )
+
+    @classmethod
+    def _load_template(cls, language: str = "pt_BR", template_name: str = "jurist") -> Dict[str, str]:
+        """Backward-compatible method for legacy internal calls."""
+        return cls.load_template(template_name=template_name, language=language)
+
+    # =========================================================================
+    # MESSAGE BUILDING & FORMATTING (Delegated to IPromptBuilder)
+    # =========================================================================
+
+    @classmethod
+    def build_messages(
+        cls,
+        source: Optional[str] = None,
+        status: Optional[str] = None,
+        values: Optional[Any] = None,
+        language: str = "pt_BR",
+        template_name: str = "jurist",
+        **kwargs: Any
+    ) -> List[Dict[str, str]]:
         """
-        Builds the chat messages for the Jurist LLM.
+        Builds and formats chat messages for an LLM agent.
         
-        Args:
-            source: Sensor/source identifier.
-            status: Detected state (NORMAL, DRIFT, ATTACK, etc).
-            values: Numerical data payload.
-            language: Target language code.
-            
-        Returns:
-            List of message dicts [{role, content}, ...] ready for tokenization.
+        Loads the template via the configured ITemplateLoader and formats
+        the chat payload via IPromptBuilder.
         """
-        template = cls._load_template(language)
+        template = cls.load_template(template_name=template_name, language=language)
+        return cls._default_builder.build_messages(
+            template=template,
+            source=source,
+            status=status,
+            values=values,
+            **kwargs
+        )
 
-        return [
-            {"role": "system", "content": template.get("system", "")},
-            {"role": "user", "content": template.get("user", "").format(
-                source=source, status=status, values=values
-            )}
-        ]
+    # =========================================================================
+    # RESPONSE CLEANING & POST-PROCESSING (Delegated to IResponseSanitizer)
+    # =========================================================================
 
-    @staticmethod
-    def clean_response(response: str) -> str:
+    @classmethod
+    def clean_response(cls, response: str, cleaners: Optional[List[Callable[[str], str]]] = None) -> str:
         """
-        Removes CoT thinking tags from LLM output.
-        
-        Handles:
-        - Complete <think>...</think> blocks
-        - Unclosed <think> tags (truncated output)
+        Cleans and sanitizes LLM output (removes <think> tags, applies custom filters).
         """
-        # Remove complete think blocks
-        cleaned = re.sub(r'(?s)<think>.*?</think>', '', response).strip()
+        return cls._default_sanitizer.clean(response, cleaners)
 
-        # Handle unclosed think tags
-        if '<think>' in cleaned:
-            parts = cleaned.split('</think>', 1)
-            if len(parts) > 1:
-                cleaned = parts[1].strip()
-            else:
-                cleaned = cleaned.replace('<think>', '').strip()
 
-        return cleaned
-
-    @staticmethod
-    def _resolve_language(language: str) -> str:
-        """Maps language codes to template keys."""
-        lang = language.lower()
-        if 'en' in lang:
-            return 'en'
-        elif 'fr' in lang:
-            return 'fr'
-        elif 'es' in lang:
-            return 'es'
-        elif 'ru' in lang:
-            return 'ru'
-        elif 'zh' in lang:
-            return 'zh'
-        return 'pt_br'
+__all__ = [
+    "_SafeFormatter",
+    "PromptRegistry",
+]

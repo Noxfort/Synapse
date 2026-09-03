@@ -16,13 +16,23 @@
 #
 # File: src/models/diffusion_gatv2.py
 # Author: Gabriel Moraes
-# Date: 2026-04-27
+# Date: 2026-08-19
 
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, List, Tuple
+from typing import Optional, Tuple
+
+from src.utils.graph_utils import (
+    compute_random_walk_transition_matrices,
+    batch_offset_edge_index
+)
+from src.blocks.graph_blocks import (
+    DiffusionGraphConv,
+    AdaptiveAdjacency,
+    ObservabilityGate,
+    GatedTemporalConv
+)
 
 try:
     from torch_geometric.nn import GATv2Conv
@@ -31,175 +41,16 @@ except ImportError:
     PYG_AVAILABLE = False
     GATv2Conv = None
 
-# Enable Tensor Cores globally for matrix multiplications and cuDNN operations
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32 = True
-
-
-class DiffusionGraphConv(nn.Module):
-    """
-    Diffusion Graph Convolution Layer (DCRNN / Graph WaveNet style).
-    
-    Models traffic flow as a Markov diffusion process in two directions:
-    1. Forward Random Walk (Downstream flow): P_f = D_o^{-1} * A
-    2. Backward Random Walk (Upstream wave/congestion): P_b = D_i^{-1} * A^T
-    3. Adaptive Adjacency: Learns hidden correlations not in static map.
-    """
-
-    def __init__(self, in_channels: int, out_channels: int, diffusion_steps: int = 2):
-        super(DiffusionGraphConv, self).__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.diffusion_steps = diffusion_steps
-        
-        # Number of matrices: Forward(K) + Backward(K) + Adaptive(1) + Identity(1)
-        # Total transition matrices = 2 * diffusion_steps + 1
-        num_matrices = 2 * diffusion_steps + 1
-        self.weights = nn.Parameter(torch.FloatTensor(num_matrices * in_channels, out_channels))
-        self.bias = nn.Parameter(torch.FloatTensor(out_channels))
-        
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        nn.init.xavier_uniform_(self.weights)
-        nn.init.zeros_(self.bias)
-
-    @staticmethod
-    def compute_transition_matrices(
-        num_nodes: int, 
-        edge_index: torch.Tensor, 
-        edge_weight: Optional[torch.Tensor] = None,
-        device: torch.device = torch.device('cpu')
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Computes forward and backward normalized random-walk transition matrices.
-        """
-        if edge_index.numel() == 0 or edge_index.size(1) == 0:
-            # Fallback for disconnected graph
-            identity = torch.eye(num_nodes, device=device)
-            return identity, identity
-
-        # Build dense adjacency
-        adj = torch.zeros((num_nodes, num_nodes), device=device)
-        src, dst = edge_index[0], edge_index[1]
-        
-        weights = edge_weight if edge_weight is not None else torch.ones_like(src, dtype=torch.float, device=device)
-        adj.index_put_((src, dst), weights)
-
-        # Forward transition (Out-degree normalization)
-        d_out = adj.sum(dim=1)
-        d_out_inv = torch.where(d_out > 0, 1.0 / d_out, torch.zeros_like(d_out))
-        p_forward = torch.diag(d_out_inv) @ adj
-
-        # Backward transition (In-degree normalization of transpose)
-        adj_t = adj.t()
-        d_in = adj_t.sum(dim=1)
-        d_in_inv = torch.where(d_in > 0, 1.0 / d_in, torch.zeros_like(d_in))
-        p_backward = torch.diag(d_in_inv) @ adj_t
-
-        return p_forward, p_backward
-
-    def forward(
-        self, 
-        x: torch.Tensor, 
-        p_forward: torch.Tensor, 
-        p_backward: torch.Tensor, 
-        adaptive_adj: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        """
-        Args:
-            x: Node features [Batch, Num_Nodes, In_Channels]
-            p_forward: Forward random-walk matrix [Num_Nodes, Num_Nodes]
-            p_backward: Backward random-walk matrix [Num_Nodes, Num_Nodes]
-            adaptive_adj: Learned adaptive adjacency [Num_Nodes, Num_Nodes]
-        Returns:
-            out: Convolved node features [Batch, Num_Nodes, Out_Channels]
-        """
-        batch_size, num_nodes, in_channels = x.shape
-        states: List[torch.Tensor] = [x]  # Order 0: Identity (current node state)
-
-        # Forward Walk Powers: P_f^k * X
-        x_f = x
-        for _ in range(self.diffusion_steps):
-            # Matrix multiplication over node dimension: [Batch, N, C] with [N, N] -> [Batch, N, C]
-            x_f = torch.einsum('nm,bmc->bnc', p_forward, x_f)
-            states.append(x_f)
-
-        # Backward Walk Powers: P_b^k * X
-        x_b = x
-        for _ in range(self.diffusion_steps):
-            x_b = torch.einsum('nm,bmc->bnc', p_backward, x_b)
-            states.append(x_b)
-
-        # Adaptive Transition (if available)
-        if adaptive_adj is not None:
-            x_adp = torch.einsum('nm,bmc->bnc', adaptive_adj, x)
-            # Match number of states expected by weights
-            if len(states) < (2 * self.diffusion_steps + 1):
-                states.append(x_adp)
-            else:
-                # Replace last state with adaptive combination
-                states[-1] = 0.5 * (states[-1] + x_adp)
-
-        # Concatenate diffusion states along feature dimension: [Batch, N, Num_Matrices * In_Channels]
-        h = torch.cat(states[: (2 * self.diffusion_steps + 1)], dim=-1)
-
-        # Linear projection to output channels: [Batch, N, Out_Channels]
-        out = torch.einsum('bnc,cd->bnd', h, self.weights) + self.bias
-        return out
-
-
-class GatedTemporalConv(nn.Module):
-    """
-    Gated Temporal Convolution (Gated TCN).
-    Applies 1D causal convolutions with GLU (Gated Linear Unit): tanh(W1*x) * sigmoid(W2*x)
-    """
-
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int = 3, dropout: float = 0.1):
-        super(GatedTemporalConv, self).__init__()
-        self.kernel_size = kernel_size
-        padding = (kernel_size - 1)  # Causal padding
-
-        self.conv_filter = nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding)
-        self.conv_gate = nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding)
-        self.dropout = nn.Dropout(dropout)
-        
-        # Residual connection
-        self.residual = nn.Conv1d(in_channels, out_channels, 1) if in_channels != out_channels else nn.Identity()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: [Batch, In_Channels, Seq_Len]
-        Returns:
-            out: [Batch, Out_Channels, Seq_Len]
-        """
-        # Trim right side for strict causality
-        filt = torch.tanh(self.conv_filter(x))
-        gate = torch.sigmoid(self.conv_gate(x))
-        
-        if self.kernel_size > 1:
-            filt = filt[:, :, :-(self.kernel_size - 1)]
-            gate = gate[:, :, :-(self.kernel_size - 1)]
-            
-        gated_out = filt * gate
-        res = self.residual(x)
-        
-        return self.dropout(gated_out + res)
-
 
 class DiffusionGATv2(nn.Module):
     """
     Hybrid Spatio-Temporal Diffusion and Dynamic Attention Network.
     
-    Combines:
-    1. Bidirectional Graph Diffusion (Graph WaveNet / DCRNN) for macroscopic flow spreading.
-    2. Adaptive Node Embeddings (E1, E2) for latent topological correlation learning.
-    3. Gated Temporal Convolutions for fast multi-scale temporal filtering.
-    4. GATv2 Dynamic Spatial Attention with observability masking.
-    
-    This enables precise state extrapolation to the entire city even when only
-    a single node has an active sensor.
+    A pure neural model conforming to SOLID principles:
+    1. Bidirectional Graph Diffusion (DiffusionGraphConv) for macroscopic flow spreading.
+    2. Adaptive Node Embeddings (AdaptiveAdjacency) for latent topological correlation learning.
+    3. GATv2 Dynamic Spatial Attention with observability masking.
+    4. Sensor Observability Gating (ObservabilityGate) for calibrating ground truth anchors.
     """
 
     def __init__(
@@ -219,12 +70,12 @@ class DiffusionGATv2(nn.Module):
         self.hidden_channels = hidden_channels
         self.out_channels = out_channels
         self.diffusion_steps = diffusion_steps
+        self.gat_heads = gat_heads
         
-        # 1. Adaptive Graph Embeddings (E1, E2)
-        self.node_emb1 = nn.Parameter(torch.randn(num_nodes, adaptive_dim))
-        self.node_emb2 = nn.Parameter(torch.randn(num_nodes, adaptive_dim))
+        # 1. Adaptive Graph Adjacency Block (SRP/DIP)
+        self.adaptive_block = AdaptiveAdjacency(num_nodes=num_nodes, adaptive_dim=adaptive_dim)
         
-        # 2. Diffusion Graph Convolution Block
+        # 2. Diffusion Graph Convolution Blocks (SRP/DIP)
         self.diff_conv1 = DiffusionGraphConv(in_channels, hidden_channels, diffusion_steps)
         self.diff_conv2 = DiffusionGraphConv(hidden_channels, out_channels, diffusion_steps)
         
@@ -240,27 +91,20 @@ class DiffusionGATv2(nn.Module):
         else:
             self.gat_layer = None
 
-        # 4. Gated Temporal Convolution
-        self.gated_tcn = GatedTemporalConv(out_channels, out_channels, kernel_size=3, dropout=dropout)
-        
-        # 5. Layer Normalization & Dropout
+        # 4. Layer Normalization & Dropout
         self.norm1 = nn.LayerNorm(hidden_channels)
         self.norm2 = nn.LayerNorm(out_channels)
         self.dropout = nn.Dropout(dropout)
         
-        # 6. Observability Gate (Conditions extrapolation on active sensor presence)
-        self.mask_gate = nn.Sequential(
-            nn.Linear(out_channels + 1, out_channels),
-            nn.Sigmoid()
-        )
+        # 5. Observability Gate Block (SRP/ISP)
+        self.observability_gate = ObservabilityGate(in_channels=out_channels, out_channels=out_channels)
 
     def get_adaptive_adjacency(self) -> torch.Tensor:
         """
         Generates softmax-normalized adaptive adjacency matrix:
         A_adp = Softmax(ReLU(E1 * E2^T))
         """
-        adp = F.relu(torch.mm(self.node_emb1, self.node_emb2.t()))
-        return F.softmax(adp, dim=-1)
+        return self.adaptive_block()
 
     def forward(
         self,
@@ -290,14 +134,13 @@ class DiffusionGATv2(nn.Module):
         batch_size, num_nodes, in_dim = x.shape
         device = x.device
         
-        # 1. Compute dynamic transition matrices
-        # If global speeds exist, scale edge weights by physical velocity factor
+        # 1. Compute dynamic transition matrices via graph utilities (SRP)
         edge_weights = None
         if global_speed_factor is not None and edge_index.numel() > 0:
             if global_speed_factor.dim() == 1 and global_speed_factor.size(0) == edge_index.size(1):
                 edge_weights = F.relu(global_speed_factor)
         
-        p_forward, p_backward = DiffusionGraphConv.compute_transition_matrices(
+        p_forward, p_backward = compute_random_walk_transition_matrices(
             num_nodes=num_nodes,
             edge_index=edge_index,
             edge_weight=edge_weights,
@@ -305,7 +148,7 @@ class DiffusionGATv2(nn.Module):
         )
         
         # 2. Get adaptive graph
-        adp_adj = self.get_adaptive_adjacency().to(device)
+        adp_adj = self.adaptive_block().to(device)
         
         # 3. Diffusion Step 1
         h1 = self.diff_conv1(x, p_forward, p_backward, adaptive_adj=adp_adj)
@@ -318,36 +161,23 @@ class DiffusionGATv2(nn.Module):
         
         # 5. Spatial GATv2 Attention Refinement
         if self.gat_layer is not None and edge_index.numel() > 0:
-            # Flatten batch for PyG Conv: [Batch * N, C]
             h_flat = h2.view(-1, self.out_channels)
-            
-            # Replicate edge_index across batch
-            if batch_size == 1:
-                batch_edge_index = edge_index.to(device)
-            else:
-                edge_list = []
-                for b in range(batch_size):
-                    edge_list.append(edge_index.to(device) + (b * num_nodes))
-                batch_edge_index = torch.cat(edge_list, dim=1)
+            batch_edge_index = batch_offset_edge_index(edge_index, batch_size, num_nodes, device)
                 
             gat_out = self.gat_layer(h_flat, batch_edge_index)
             h_spatial = gat_out.view(batch_size, num_nodes, self.out_channels)
             h2 = self.norm2(h2 + self.dropout(F.elu(h_spatial)))
             
-        # 6. Observability Gate (Calibração Dinâmica)
-        # If mask is provided, modulates features to anchor ground truth
-        if observability_mask is not None:
-            mask = observability_mask.to(device)
-            if mask.dim() == 1:
-                mask = mask.unsqueeze(0).unsqueeze(-1).expand(batch_size, num_nodes, 1)
-            elif mask.dim() == 2:
-                mask = mask.unsqueeze(-1)
-                
-            # Gate combines diffusion features with sensor presence confidence
-            gate_input = torch.cat([h2, mask.float()], dim=-1)
-            gate = self.mask_gate(gate_input)
-            
-            # Ground truth anchors keep full strength; virtual nodes receive diffused state
-            h2 = h2 * gate + x * mask.float() if in_dim == self.out_channels else h2 * gate
+        # 6. Observability Gate (Dynamic Calibration & Anchor preservation)
+        h2 = self.observability_gate(h=h2, x_raw=x, observability_mask=observability_mask)
 
         return h2, adp_adj
+
+
+__all__ = [
+    "DiffusionGATv2",
+    "DiffusionGraphConv",
+    "AdaptiveAdjacency",
+    "ObservabilityGate",
+    "GatedTemporalConv"
+]

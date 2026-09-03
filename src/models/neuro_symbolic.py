@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2026 Noxfort Labs
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -18,10 +18,13 @@
 # Author: Gabriel Moraes
 # Date: 2026-08-17
 
+import os
 from typing import Tuple, Dict, Optional, Any, Union
 import torch
 import torch.nn as nn
 from transformers import AutoModel, AutoConfig
+
+from src.utils.model_paths import get_distilroberta_base_path
 
 # Enable Tensor Cores globally for matrix multiplications and cuDNN operations
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -41,22 +44,25 @@ class NeuroSymbolicModel(nn.Module):
 
     def __init__(
         self,
-        model_name: str = "distilroberta-base",
+        model_name: Optional[str] = None,
         freeze_transformer: bool = True,
         latent_dim: int = 64,
         transformer: Optional[nn.Module] = None,
         physics_loss_engine: Optional[Any] = None
     ):
         super(NeuroSymbolicModel, self).__init__()
+        resolved_name = model_name or get_distilroberta_base_path()
+        self.model_name = resolved_name
         
         # 1. Semantic Backbone (Transformer - DIP support)
         if transformer is not None:
             self.transformer = transformer
             self.hidden_size = getattr(transformer.config, "hidden_size", 768)
         else:
-            self.config = AutoConfig.from_pretrained(model_name)
+            is_local = os.path.isdir(resolved_name)
+            self.config = AutoConfig.from_pretrained(resolved_name, local_files_only=is_local)
             self.hidden_size = self.config.hidden_size
-            self.transformer = AutoModel.from_pretrained(model_name)
+            self.transformer = AutoModel.from_pretrained(resolved_name, local_files_only=is_local)
         
         if freeze_transformer:
             for param in self.transformer.parameters():
@@ -100,7 +106,9 @@ class NeuroSymbolicModel(nn.Module):
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-        return_physics_residuals: bool = True
+        return_physics_residuals: bool = True,
+        semantic_type: Optional[str] = None,
+        **kwargs
     ) -> Union[Tuple[torch.Tensor, torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         Forward pass through Transformer -> TCN Reasoner -> Physics Projection.
@@ -114,9 +122,8 @@ class NeuroSymbolicModel(nn.Module):
         with torch.set_grad_enabled(not self.transformer.training):
             outputs = self.transformer(input_ids=input_ids, attention_mask=attention_mask)
         
-        original_embeddings = outputs.last_hidden_state
-        
-        # 2. Permute for 1D Conv: [Batch, Seq, Hidden] -> [Batch, Hidden, Seq]
+        device = next(self.encoder.parameters()).device
+        original_embeddings = outputs.last_hidden_state.to(device)
         x = original_embeddings.permute(0, 2, 1)
         
         # 3. Latent Representation
@@ -132,7 +139,11 @@ class NeuroSymbolicModel(nn.Module):
         if return_physics_residuals:
             from src.physics.traffic_loss import TrafficPhysicsLoss
             engine = self.physics_engine or TrafficPhysicsLoss(max_acceleration=10.0)
-            physics_residuals = engine.compute_losses(physics_states)
+            physics_residuals = engine.compute_losses(
+                physics_states,
+                semantic_type=semantic_type,
+                **kwargs
+            )
             return reconstruction, original_embeddings, physics_residuals
             
         return reconstruction, original_embeddings, physics_states

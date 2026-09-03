@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -20,8 +20,9 @@
 
 import numpy as np
 import torch
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, Union
 
+from src.interfaces.node import INodeManager
 # Import Managers and Agents for type hinting
 from src.managers.node_manager import NodeManager
 from src.managers.graph_manager import GraphManager
@@ -49,7 +50,7 @@ class CycleRunner:
 
     def execute_cycle(
         self,
-        node_manager: Optional[NodeManager],
+        node_manager: Optional[Union[INodeManager, NodeManager]],
         graph_manager: Optional[GraphManager],
         pbt_manager: PBTManager,
         kse_manager: Optional[KSEManager],

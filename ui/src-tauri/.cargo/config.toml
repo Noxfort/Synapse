@@ -1,0 +1,11 @@
+# Cargo configuration for Linux runner sanitization
+# Prevents Snap-injected LD_LIBRARY_PATH from breaking glibc/libpthread symbol resolution
+
+[target.'cfg(target_os = "linux")']
+runner = "env -u LD_LIBRARY_PATH -u LD_PRELOAD"
+
+[target.x86_64-unknown-linux-gnu]
+runner = "env -u LD_LIBRARY_PATH -u LD_PRELOAD"
+
+[target.aarch64-unknown-linux-gnu]
+runner = "env -u LD_LIBRARY_PATH -u LD_PRELOAD"

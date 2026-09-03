@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -26,12 +26,14 @@ from src.domain.app_state import AppState
 from src.domain.entities import SourceStatus
 
 # Import SRP Components
-from src.engine.ingestion_pipeline import IngestionPipeline
+from src.pipeline.ingestion_pipeline import IngestionPipeline
 from src.managers.graph_manager import GraphManager
 from src.managers.node_manager import NodeManager
+from src.managers.storage_manager import StorageManager
 from src.managers.xai_manager import XAIManager
 from src.managers.kse_manager import KSEManager
 from src.managers.pbt_manager import PBTManager
+from src.factories.node_factory import NodeFactory
 
 # Import Infrastructure
 from src.infrastructure.sensor_gateway import SensorGateway
@@ -44,17 +46,18 @@ from src.workers.xai_worker import XAIWorker
 from src.services.historical_manager import HistoricalManager
 from src.services.telemetry_service import TelemetryService
 from src.factories.agent_factory import AgentFactory
+from src.utils.logging_setup import get_logger
+
+logger = get_logger("SystemBuilder")
+
 
 class SystemBuilder:
     """
-    Encapsulates the complexity of constructing and wiring the SYNAPSE system.
+    Composite Builder responsible for assembling the entire runtime dependency graph.
     
-    Responsibility:
-    - Instantiates all Managers, Agents, and Workers.
-    - Resolves dependencies between components.
-    - Returns a context dictionary with fully initialized objects.
-    
-    This cleans up the InferenceEngine, removing 'Construction' responsibility.
+    Refactored V4 (SOLID Architecture):
+    - [SRP] Only handles object assembly and dependency wiring.
+    - [DIP] Decoupled from concrete implementations via Factory/Container.
     """
 
     def __init__(self, app_state: AppState, device: torch.device, model_config: dict):
@@ -68,10 +71,11 @@ class SystemBuilder:
         Main build sequence.
         Returns a dictionary containing all system components ready to run.
         """
-        print("[SystemBuilder] 🔨 Starting System Construction...")
+        logger.info("🔨 Starting System Construction...")
 
         # 1. Base Services
         telemetry = TelemetryService()
+        storage_manager = StorageManager()
         historical_manager = HistoricalManager(app_state=self.app_state)
         
         # 2. Spatial Context (Graph)
@@ -91,12 +95,14 @@ class SystemBuilder:
             device=self.device
         )
 
-        # 3. Node & Memory Manager
+        # 3. Node & Memory Manager (DIP: Injected Storage & Factory)
         node_manager = NodeManager(
             config=self.config,
             device=self.device,
             historical_manager=historical_manager,
-            graph_manager=graph_manager
+            graph_manager=graph_manager,
+            storage=storage_manager,
+            node_factory=NodeFactory
         )
 
         # 4. Global Agents (Coordinator & Fuser)
@@ -142,6 +148,7 @@ class SystemBuilder:
         # Pack everything
         self.components = {
             "telemetry": telemetry,
+            "storage_manager": storage_manager,
             "historical_manager": historical_manager,
             "graph_manager": graph_manager,
             "node_manager": node_manager,
@@ -157,5 +164,5 @@ class SystemBuilder:
             "sensor_gateway": sensor_gateway
         }
         
-        print("[SystemBuilder] ✅ Construction Complete.")
+        logger.info("✅ Construction Complete.")
         return self.components

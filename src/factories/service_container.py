@@ -89,17 +89,47 @@ class ServiceContainer:
         enricher = SemanticEnricher(self.app_state)
         xai_manager = XAIManager(xai_worker, enricher)
 
-        # --- 5. Inference Engine ---
+        # --- 5. Inference Engine (Pure Orchestrator) ---
         from src.engine.inference_engine import InferenceEngine
+        from src.engine.neural_factory import NeuralFactory
+        from src.engine.snapshot_builder import SnapshotBuilder
+        from src.engine.cycle_processor import CycleProcessor
+        from src.engine.gating_policy import SourceGatingPolicy
+        from src.engine.forecast_imputer import ForecastImputer
+
+        neural_factory = NeuralFactory()
+        device = neural_factory.get_device()
+        agents = neural_factory.build_all(self.app_state)
+
+        snapshot_builder = SnapshotBuilder(
+            app_state=self.app_state,
+            graph_manager=graph_manager,
+            embedding_dim=32
+        )
+
+        processor = CycleProcessor(
+            app_state=self.app_state,
+            device=device,
+            coordinator=agents.get('coordinator'),
+            fuser=agents.get('fuser'),
+            auditor=agents.get('auditor'),
+            xai_manager=xai_manager,
+            graph_manager=graph_manager
+        )
+
+        from src.engine.data_flow_router import DataFlowRouter
+
+        data_flow_router = DataFlowRouter(self.app_state, graph_manager)
+        ingestion.data_ready.connect(data_flow_router.handle_data_flow)
 
         inference_engine = InferenceEngine(
-            self.app_state,
-            ingestion,
-            graph_manager,
-            historical_manager,
-            linguist_service,
-            xai_worker,
-            xai_manager
+            app_state=self.app_state,
+            graph_manager=graph_manager,
+            snapshot_builder=snapshot_builder,
+            processor=processor,
+            gating_policy=gating_policy,
+            forecast_imputer=forecast_imputer,
+            ingestion=ingestion,
         )
 
         # --- 6. Cartographer (Safe Import) ---
@@ -112,6 +142,7 @@ class ServiceContainer:
 
         return {
             "inference_engine": inference_engine,
+            "data_flow_router": data_flow_router,
             "ingestion": ingestion,
             "cartographer": cartographer,
             "fenix": fenix,

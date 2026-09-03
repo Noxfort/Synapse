@@ -23,9 +23,10 @@ import numpy as np
 from typing import Dict, Optional, Any
 
 from src.agents.base_agent import BaseAgent
-from src.domain.interfaces import ICorrectorPipeline, ICorrectorTrainer
-from src.services.corrector_pipeline import CorrectorPipeline
-from src.services.corrector_trainer import CorrectorTrainer
+from src.interfaces.pipelines import ICorrectorPipeline
+from src.interfaces.trainers import ICorrectorTrainer
+from src.pipeline.corrector_pipeline import CorrectorPipeline
+from src.trainer.corrector_trainer import CorrectorTrainer
 from src.utils.convergence_tracker import MarginalConvergenceTracker
 
 
@@ -36,8 +37,8 @@ class CorrectorAgent(BaseAgent):
     Pure Orchestrator Architecture (SOLID Compliant):
     - Single Responsibility: Manages physics-informed denoising and golden dataset generation.
     - Delegations:
-      -> PI-VAE Inference & Normalization: ICorrectorPipeline (src/services/corrector_pipeline.py)
-      -> PI-VAE Convergence & Training: ICorrectorTrainer (src/services/corrector_trainer.py)
+      -> PI-VAE Inference & Normalization: ICorrectorPipeline (src/pipeline/corrector_pipeline.py)
+      -> PI-VAE Convergence & Training: ICorrectorTrainer (src/trainer/corrector_trainer.py)
     """
 
     def __init__(
@@ -83,9 +84,17 @@ class CorrectorAgent(BaseAgent):
         self.physics_weight = physics_weight
         self.max_acceleration = max_acceleration
 
+    @property
+    def scaler(self):
+        return getattr(self.trainer, "scaler", None)
+
     def inference(self, input_data: Any, batch_size: int = 128) -> np.ndarray:
         """Delegates denoising and signal correction to CorrectorPipeline."""
         return self.pipeline.correct(input_data, batch_size=batch_size)
+
+    def denoise(self, input_data: Any, batch_size: int = 128) -> np.ndarray:
+        """Alias for inference."""
+        return self.inference(input_data, batch_size=batch_size)
 
     def train_step(self, batch_data: Any) -> float:
         """Delegates single step optimization to CorrectorTrainer."""

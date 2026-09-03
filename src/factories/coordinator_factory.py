@@ -21,8 +21,8 @@
 from typing import Dict, Any, Optional
 
 from src.agents.coordinator_agent import CoordinatorAgent
-from src.services.coordinator_pipeline import CoordinatorPipeline
-from src.services.coordinator_trainer import CoordinatorTrainer
+from src.pipeline.coordinator_pipeline import CoordinatorPipeline
+from src.trainer.coordinator_trainer import CoordinatorTrainer
 
 
 class CoordinatorFactory:

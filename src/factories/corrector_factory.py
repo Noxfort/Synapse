@@ -21,8 +21,8 @@
 from typing import Dict, Any, Optional
 
 from src.agents.corrector_agent import CorrectorAgent
-from src.services.corrector_pipeline import CorrectorPipeline
-from src.services.corrector_trainer import CorrectorTrainer
+from src.pipeline.corrector_pipeline import CorrectorPipeline
+from src.trainer.corrector_trainer import CorrectorTrainer
 
 
 class CorrectorFactory:

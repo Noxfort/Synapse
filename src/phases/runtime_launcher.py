@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -17,13 +17,6 @@
 # File: src/phases/runtime_launcher.py
 # Author: Gabriel Moraes
 # Date: 2026-02-13
-#
-# Refactored V5 (SOLID — Single Class per Module):
-#
-# This module contains ONLY RuntimeLauncher (thread orchestrator).
-# The neural worker lives in engine_worker.py (SRP).
-# Command dispatch lives in command_registry.py (OCP).
-# Component construction lives in engine_component_factory.py (DIP).
 
 import traceback
 from typing import Optional, TYPE_CHECKING
@@ -141,6 +134,7 @@ class RuntimeLauncher(QObject):
 
         self.kse_thread.started.connect(self.kse_manager.start)
         self.kse_manager.data_ready_for_transmission.connect(self.packet_ready_to_send)
+        self.kse_manager.log_message.connect(self.log_message.emit)
 
         self.kse_thread.start()
         self.log_message.emit("[KSE] Physics Engine Started on Dedicated Thread.")
@@ -215,14 +209,37 @@ class RuntimeLauncher(QObject):
         if not self._engine_worker or not self._engine_worker.inference_engine:
             return
 
-        engine = self._engine_worker.inference_engine
+        worker = self._engine_worker
+        engine = worker.inference_engine
+        router = worker.data_flow_router
+        xai = worker.xai_manager
+        graph = worker.graph_manager
         r = self._command_registry
 
-        r.register("process_data",   engine.process_data_point)
-        r.register("run_cycle",      engine.run_global_cycle)
-        r.register("explain_buffer", engine.process_veto_buffer)
-        r.register("explain_local",  engine.explain_local_agent)
-        r.register("explain_global", engine.explain_global_fuser)
+        if router:
+            r.register("process_data", router.process_data_point)
+
+        r.register("run_cycle", engine.run_global_cycle)
+
+        if xai:
+            r.register("explain_buffer", lambda: xai.process_buffer_strategy(
+                [n.id for n in self.app_state.get_all_nodes()]
+            ))
+            r.register("explain_local", lambda sid: (
+                xai.explain_local(sid, graph.get_node(sid))
+                if graph and graph.get_node(sid)
+                else None
+            ))
+            r.register("explain_global", lambda: (
+                xai.explain_global(
+                    getattr(getattr(engine, 'processor', None), 'fuser', None),
+                    graph.nodes,
+                    seq_len=60
+                )
+                if graph and graph.nodes
+                else None
+            ))
+
         r.register("update_model", lambda p: self.log_message.emit(
             f"[Launcher] Model update requested: {p}"
         ))

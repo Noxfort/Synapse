@@ -1,0 +1,41 @@
+{
+  "insert_telemetry_sample": {
+    "postgres": "INSERT INTO synapse_sensor_telemetry_raw (collected_at, scenario_name, sensor_str_id, sensor_int_id, flow_rate, speed, occupancy, sample_count, status) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);",
+    "sqlite": "INSERT INTO synapse_sensor_telemetry_raw (collected_at, scenario_name, sensor_str_id, sensor_int_id, flow_rate, speed, occupancy, sample_count, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);"
+  },
+  "query_telemetry_history": {
+    "postgres": "SELECT sensor_str_id, sensor_int_id, flow_rate, speed, occupancy, sample_count, status, collected_at, scenario_name FROM synapse_sensor_telemetry_raw WHERE collected_at >= %s;",
+    "sqlite": "SELECT sensor_str_id, sensor_int_id, flow_rate, speed, occupancy, sample_count, status, collected_at, scenario_name FROM synapse_sensor_telemetry_raw WHERE collected_at >= ?;",
+    "all": "SELECT sensor_str_id, sensor_int_id, flow_rate, speed, occupancy, sample_count, status, collected_at, scenario_name FROM synapse_sensor_telemetry_raw;"
+  },
+  "query_telemetry_aggregated": {
+    "postgres": "SELECT sensor_int_id, AVG(speed) AS avg_speed, MIN(speed) AS min_speed, AVG(flow_rate) AS avg_flow, AVG(occupancy) AS avg_occupancy, SUM(flow_rate * COALESCE(sample_count, 1)) AS total_volume, SUM(COALESCE(sample_count, 1)) AS total_samples FROM synapse_sensor_telemetry_raw WHERE collected_at >= %s GROUP BY sensor_int_id;",
+    "sqlite": "SELECT sensor_int_id, AVG(speed) AS avg_speed, MIN(speed) AS min_speed, AVG(flow_rate) AS avg_flow, AVG(occupancy) AS avg_occupancy, SUM(flow_rate * COALESCE(sample_count, 1)) AS total_volume, SUM(COALESCE(sample_count, 1)) AS total_samples FROM synapse_sensor_telemetry_raw WHERE collected_at >= ? GROUP BY sensor_int_id;",
+    "postgres_all": "SELECT sensor_int_id, AVG(speed) AS avg_speed, MIN(speed) AS min_speed, AVG(flow_rate) AS avg_flow, AVG(occupancy) AS avg_occupancy, SUM(flow_rate * COALESCE(sample_count, 1)) AS total_volume, SUM(COALESCE(sample_count, 1)) AS total_samples FROM synapse_sensor_telemetry_raw GROUP BY sensor_int_id;",
+    "sqlite_all": "SELECT sensor_int_id, AVG(speed) AS avg_speed, MIN(speed) AS min_speed, AVG(flow_rate) AS avg_flow, AVG(occupancy) AS avg_occupancy, SUM(flow_rate * COALESCE(sample_count, 1)) AS total_volume, SUM(COALESCE(sample_count, 1)) AS total_samples FROM synapse_sensor_telemetry_raw GROUP BY sensor_int_id;"
+  },
+  "fallback_history_batches": {
+    "postgres": "SELECT sensor_int_id, avg_flow AS flow_rate, avg_speed AS speed, avg_occupancy AS occupancy, sample_count, summary_hour AS collected_at FROM synapse_sensor_hourly_summary WHERE summary_hour >= %s ORDER BY summary_hour ASC;",
+    "sqlite": "SELECT sensor_int_id, avg_flow AS flow_rate, avg_speed AS speed, avg_occupancy AS occupancy, sample_count, summary_hour AS collected_at FROM synapse_sensor_hourly_summary WHERE summary_hour >= ? ORDER BY summary_hour ASC;",
+    "all": "SELECT sensor_int_id, avg_flow AS flow_rate, avg_speed AS speed, avg_occupancy AS occupancy, sample_count, summary_hour AS collected_at FROM synapse_sensor_hourly_summary ORDER BY summary_hour ASC;"
+  },
+  "consolidate_sensor_hourly_summary": {
+    "postgres": "INSERT INTO synapse_sensor_hourly_summary (sensor_int_id, summary_hour, scenario_name, sample_count, avg_speed, min_speed, avg_flow, avg_occupancy, total_volume) SELECT sensor_int_id, date_trunc('hour', collected_at) AS summary_hour, scenario_name, SUM(COALESCE(sample_count, 1)) AS sample_count, SUM(speed * COALESCE(sample_count, 1)) / SUM(COALESCE(sample_count, 1)) AS avg_speed, MIN(speed) AS min_speed, SUM(flow_rate * COALESCE(sample_count, 1)) / SUM(COALESCE(sample_count, 1)) AS avg_flow, SUM(occupancy * COALESCE(sample_count, 1)) / SUM(COALESCE(sample_count, 1)) AS avg_occupancy, SUM(flow_rate * COALESCE(sample_count, 1)) AS total_volume FROM synapse_sensor_telemetry_raw WHERE collected_at >= %s AND collected_at < %s AND sensor_int_id IS NOT NULL GROUP BY sensor_int_id, date_trunc('hour', collected_at), scenario_name ON CONFLICT (sensor_int_id, summary_hour, scenario_name) DO UPDATE SET sample_count = EXCLUDED.sample_count, avg_speed = EXCLUDED.avg_speed, min_speed = EXCLUDED.min_speed, avg_flow = EXCLUDED.avg_flow, avg_occupancy = EXCLUDED.avg_occupancy, total_volume = EXCLUDED.total_volume;",
+    "sqlite": "INSERT OR REPLACE INTO synapse_sensor_hourly_summary (sensor_int_id, summary_hour, scenario_name, sample_count, avg_speed, min_speed, avg_flow, avg_occupancy, total_volume) SELECT sensor_int_id, strftime('%Y-%m-%d %H:00:00', collected_at) AS summary_hour, scenario_name, SUM(COALESCE(sample_count, 1)) AS sample_count, AVG(speed) AS avg_speed, MIN(speed) AS min_speed, AVG(flow_rate) AS avg_flow, AVG(occupancy) AS avg_occupancy, SUM(flow_rate * COALESCE(sample_count, 1)) AS total_volume FROM synapse_sensor_telemetry_raw WHERE collected_at < datetime('now', ? || ' hours') AND sensor_int_id IS NOT NULL GROUP BY sensor_int_id, strftime('%Y-%m-%d %H:00:00', collected_at), scenario_name;"
+  },
+  "purge_consolidated_window": {
+    "postgres": "DELETE FROM synapse_sensor_telemetry_raw WHERE collected_at >= %s AND collected_at < %s;",
+    "sqlite": "DELETE FROM synapse_sensor_telemetry_raw WHERE collected_at < datetime('now', ? || ' hours');"
+  },
+  "get_min_collected_before": {
+    "postgres": "SELECT MIN(collected_at) FROM synapse_sensor_telemetry_raw WHERE collected_at < NOW() - INTERVAL '%s hours';"
+  },
+  "get_cutoff_timestamp_interval": {
+    "postgres": "SELECT (NOW() - INTERVAL '%s hours')::timestamp;"
+  },
+  "get_next_batch_timestamp": {
+    "postgres": "SELECT (%s::timestamp + INTERVAL '%s days')::timestamp;"
+  },
+  "get_count_telemetry": "SELECT COUNT(*) FROM synapse_sensor_telemetry_raw;",
+  "get_count_golden": "SELECT COUNT(*) FROM synapse_golden_history;"
+}

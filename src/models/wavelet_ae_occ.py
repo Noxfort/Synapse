@@ -65,11 +65,14 @@ class WaveletSpectralAE(nn.Module):
         
         # 1. Wavelet Scattering Setup
         if KYMATIO_AVAILABLE:
-            self.scattering = Scattering1D(J=J, shape=(self.padded_len,), Q=Q, T=self.padded_len)
-            with torch.no_grad():
-                dummy_input = torch.zeros(1, self.padded_len)
-                dummy_out = self.scattering(dummy_input)
-                self.scat_dim = dummy_out.shape[1] 
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=UserWarning)
+                self.scattering = Scattering1D(J=J, shape=(self.padded_len,), Q=Q, T=self.padded_len)
+                with torch.no_grad():
+                    dummy_input = torch.zeros(1, self.padded_len)
+                    dummy_out = self.scattering(dummy_input)
+                    self.scat_dim = dummy_out.shape[1] 
             self.using_wavelets = True
         else:
             self.scat_dim = self.padded_len
@@ -122,7 +125,10 @@ class WaveletSpectralAE(nn.Module):
             x_padded = x
         
         if self.using_wavelets:
-            feats = self.scattering(x_padded)
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=UserWarning)
+                feats = self.scattering(x_padded)
             feats = feats.view(x_padded.size(0), -1)
         else:
             feats = x_padded

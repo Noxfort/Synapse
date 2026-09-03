@@ -1,7 +1,22 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
 # Copyright (C) 2026 Noxfort Systems
 #
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
 # File: tests/unit/test_kse_warmup.py
+# Author: Gabriel Moraes
+# Date: 2026-08-31
 
 import pytest
 import time
@@ -11,7 +26,7 @@ from unittest.mock import MagicMock, patch
 from src.managers.kse_manager import KSEManager
 from src.domain.app_state import AppState
 from src.domain.entities import DataSource, SourceType, SourceStatus
-from src.engine.traffic_node import TrafficNode
+from src.node.traffic_node import TrafficNode
 from src.memory.temporal_memory import TemporalMemory
 from src.agents.specialist_agent import SpecialistAgent
 

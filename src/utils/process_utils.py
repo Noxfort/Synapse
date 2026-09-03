@@ -15,6 +15,8 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 # File: src/utils/process_utils.py
+# Author: Gabriel Moraes
+# Date: 2026-08-31
 
 import os
 import signal

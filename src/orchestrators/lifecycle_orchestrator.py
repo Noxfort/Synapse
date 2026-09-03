@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -17,11 +17,6 @@
 # File: src/orchestrators/lifecycle_orchestrator.py
 # Author: Gabriel Moraes
 # Date: 2025-12-25
-#
-# Refactored V2 (2026-03-09): SOLID Compliance
-# - SRP: DI wiring extracted to ServiceContainer
-# - SRP: Boot logic extracted to BootSequence
-# - DIP: Depends on container abstractions, not concrete imports
 
 import enum
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer, pyqtSlot

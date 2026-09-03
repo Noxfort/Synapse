@@ -17,10 +17,6 @@
 # File: src/utils/geometry.py
 # Author: Gabriel Moraes
 # Date: 2026-04-27
-#
-# Pure computational geometry functions.
-# Extracted from FastMapMatcher to allow reuse across the codebase
-# (e.g., CartographerAgent, spatial validators, etc.).
 
 import math
 import numpy as np

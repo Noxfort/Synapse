@@ -25,6 +25,9 @@ from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
 # NEW: Import AppState definition
 from src.domain.app_state import AppState
+from src.utils.logging_setup import get_logger
+
+logger = get_logger("BootstrapPhase")
 
 if TYPE_CHECKING:
     from src.services.offline_service import OfflineService
@@ -65,6 +68,7 @@ class BootstrapPhase(QObject):
             return
             
         self.log_message.emit(">>> Starting Phase 1: Offline Bootstrap...")
+        logger.info("🔒 [Fase 1: Bootstrap Offline] Processamento de dados históricos. Ingestão de sensores ao vivo aguarda a Fase 2.")
 
         # --- INTELLIGENT SKIP CHECK ---
         # Now strictly requires all three artifacts (Golden, Safetensors, JSON)

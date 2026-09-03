@@ -22,9 +22,10 @@ import torch
 from typing import Dict, Any, Union, Optional
 
 from src.agents.base_agent import BaseAgent
-from src.domain.interfaces import IAuditorPipeline, IAuditorTrainer
-from src.services.auditor_pipeline import AuditorPipeline
-from src.services.auditor_trainer import AuditorTrainer
+from src.interfaces.pipelines import IAuditorPipeline
+from src.interfaces.trainers import IAuditorTrainer
+from src.pipeline.auditor_pipeline import AuditorPipeline
+from src.trainer.auditor_trainer import AuditorTrainer
 
 
 class AuditorAgent(BaseAgent):
@@ -34,8 +35,8 @@ class AuditorAgent(BaseAgent):
     Pure Orchestrator Architecture (SOLID Compliant):
     - Single Responsibility: High-level security auditing and anomaly detection.
     - Delegations:
-      -> Neural Pipeline & Scoring: IAuditorPipeline (src/services/auditor_pipeline.py)
-      -> Neural Optimization & Calibration: IAuditorTrainer (src/services/auditor_trainer.py)
+      -> Neural Pipeline & Scoring: IAuditorPipeline (src/pipeline/auditor_pipeline.py)
+      -> Neural Optimization & Calibration: IAuditorTrainer (src/trainer/auditor_trainer.py)
     """
 
     def __init__(
@@ -70,6 +71,7 @@ class AuditorAgent(BaseAgent):
         self.pipeline: IAuditorPipeline = pipeline
         self.trainer: IAuditorTrainer = trainer or AuditorTrainer(
             model=self.model,
+            calibrator=getattr(self.pipeline, "calibrator", None),
             learning_rate=learning_rate,
             physics_weight=physics_weight,
             enable_pinn=enable_pinn,
@@ -83,6 +85,11 @@ class AuditorAgent(BaseAgent):
     def audit(self, input_data: Union[Dict[str, Any], torch.Tensor]) -> Dict[str, Any]:
         """Delegates security and physics auditing to AuditorPipeline."""
         return self.pipeline.audit(input_data)
+
+    def reset_history(self):
+        """Delegates anomaly history reset to AuditorPipeline."""
+        if hasattr(self.pipeline, "reset_history"):
+            self.pipeline.reset_history()
 
     def train_step(self, input_data: Any) -> float:
         """Delegates optimization and adaptive threshold updates to AuditorTrainer."""

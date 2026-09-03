@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -77,7 +77,7 @@ class KSEManager(QObject):
         self._rejection_warned = False
         
         # --- Elastic Window Parameters ---
-        self.min_window_ms = 0.150  # 150ms
+        self.min_window_ms = 0.120  # 120ms (~8.3 Hz) to guarantee < 250ms latency
         self.sensor_timeout_threshold = 0.5  # 0.5s without data -> HISTORICAL
         
         # --- Monitor Timer (10ms resolution) ---
@@ -122,6 +122,7 @@ class KSEManager(QObject):
         if meh_data:
             self.last_known_state = meh_data
             self.has_new_processed_data = True
+            self._has_valid_data = True
             self.current_mode = "HISTORICAL"
             self.mode_changed.emit("HISTORICAL")
             self.log_message.emit(
@@ -278,7 +279,7 @@ class KSEManager(QObject):
                     )
 
             # --- BUILD & TRANSMIT ---
-            packet = PacketBuilder.build(payload_data, packet_source)
+            packet = PacketBuilder.build(payload_data, packet_source, self.app_state)
             if packet:
                 self.data_ready_for_transmission.emit(packet)
             

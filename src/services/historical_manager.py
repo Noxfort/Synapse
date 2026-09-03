@@ -93,18 +93,24 @@ class HistoricalManager(QObject):
         # 2. Structure Data for KSE (Map flat columns to Edges)
         result = {}
         
+        K_JAM = 125.0
+        VEH_EFFECTIVE_LEN = 7.5
+
         if self.app_state:
             edges = self.app_state.get_all_edges()
             
             if edges:
                 # Normal path: map data to edges
                 for edge in edges:
+                    v_free = getattr(edge, "max_speed", 13.89)
+                    edge_len = getattr(edge, "length", 100.0)
+                    edge_lanes = getattr(edge, "lanes", 1)
+                    max_capacity = max(1, int((edge_len / VEH_EFFECTIVE_LEN) * edge_lanes))
+
                     # DEFAULT VALUES (Safety Baseline)
-                    edge_stats = {
-                        "speed": 40.0,
-                        "density": 10.0,
-                        "queue": 0.0
-                    }
+                    density_val = 15.0
+                    speed_val = v_free
+                    queue_val = 0.0
                     
                     # INTELLIGENT MAPPING
                     speed_key = f"{edge.id}_speed"
@@ -112,29 +118,54 @@ class HistoricalManager(QObject):
                     queue_key = f"{edge.id}_queue"
                     
                     if speed_key in flat_data:
-                        edge_stats["speed"] = flat_data[speed_key]
+                        speed_val = float(flat_data[speed_key])
                     if density_key in flat_data:
-                        edge_stats["density"] = flat_data[density_key]
+                        density_val = float(flat_data[density_key])
                     if queue_key in flat_data:
-                        edge_stats["queue"] = flat_data[queue_key]
+                        queue_val = float(flat_data[queue_key])
+                    else:
+                        # Greenshields & HCM Queue Model
+                        congestion_ratio = max(0.0, 1.0 - (speed_val / v_free))
+                        density_ratio = density_val / K_JAM
+                        queue_val = congestion_ratio * density_ratio * max_capacity
+                        if getattr(edge, "signal_group_id", -1) != -1:
+                            queue_val = max(queue_val, density_ratio * min(6, max_capacity))
+                    
+                    occupancy_val = min(0.98, max(0.02, density_val / K_JAM))
+                    speed_val = max(1.0, min(v_free * 1.1, speed_val))
+                    density_val = min(K_JAM, max(0.5, density_val))
+                    
+                    edge_stats = {
+                        "speed": speed_val,
+                        "density": density_val,
+                        "queue": int(round(min(max_capacity, max(0, queue_val)))),
+                        "occupancy": occupancy_val
+                    }
                     
                     result[edge.id] = edge_stats
             elif flat_data:
                 # Fallback path: No edges configured, use flat sensor data directly
-                # Structure each sensor's flat values as synthetic edge entries
                 for sensor_id in self.fallback_engine.sensor_profiles.keys():
+                    d_val = float(flat_data.get(f"{sensor_id}_density", flat_data.get("density", 15.0)))
+                    s_val = float(flat_data.get(f"{sensor_id}_speed", flat_data.get("speed", 13.89)))
+                    q_val = float(flat_data.get(f"{sensor_id}_queue", flat_data.get("queue", 0.0)))
+                    if q_val <= 0.0 and (s_val < 10.0 or d_val > 25.0):
+                        q_val = max(1.0, (1.0 - s_val / 13.89) * (d_val / K_JAM) * 15)
                     result[sensor_id] = {
-                        "speed": flat_data.get(f"{sensor_id}_speed", flat_data.get("speed", 40.0)),
-                        "density": flat_data.get(f"{sensor_id}_density", flat_data.get("density", 10.0)),
-                        "queue": flat_data.get(f"{sensor_id}_queue", flat_data.get("queue", 0.0)),
+                        "speed": s_val,
+                        "density": d_val,
+                        "queue": int(round(q_val)),
+                        "occupancy": min(0.98, max(0.02, d_val / K_JAM)),
                     }
                 
                 # If still empty, create at least one entry from the raw flat data
                 if not result and flat_data:
+                    d_val = float(flat_data.get("density", 15.0))
                     result["synthetic_edge"] = {
-                        "speed": flat_data.get("speed", 40.0),
-                        "density": flat_data.get("density", 10.0),
-                        "queue": flat_data.get("queue", 0.0),
+                        "speed": float(flat_data.get("speed", 40.0)),
+                        "density": d_val,
+                        "queue": int(round(float(flat_data.get("queue", 1.0)))),
+                        "occupancy": min(1.0, max(0.05, d_val / 100.0)),
                     }
                 
         return result
@@ -156,6 +187,18 @@ class HistoricalManager(QObject):
             Float value if a historical match exists, None otherwise.
         """
         return self.loader.get_exact_reading(sensor_id, target_timestamp, tolerance)
+
+    def get_hierarchical_reading(
+        self,
+        sensor_id: str,
+        target_timestamp: float,
+        level_tolerances: Optional[Dict[str, float]] = None
+    ) -> Optional[float]:
+        """
+        Hierarchical Multi-Tier Temporal Resolution (Seconds -> Minutes -> Weekday -> Hour -> Mean).
+        Delegated to HistoricalDataLoader (SRP).
+        """
+        return self.loader.get_hierarchical_reading(sensor_id, target_timestamp, level_tolerances)
 
     # =========================================================================
     # MEH INTERFACE (Level 3 Fallback - Temporal Lookup)

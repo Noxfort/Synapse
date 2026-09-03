@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -149,23 +149,107 @@ class SystemController(QObject):
         phase_obj.xai_result_received.connect(self.xai_result_received)
 
     def _connect_commands(self, runtime_obj):
-        """Routes external commands (e.g. from UI) to the Runtime Phase."""
+        """Routes external commands (e.g. from UI) to the Runtime Phase with On-Demand fallback."""
         self.cmd_process_data.connect(lambda t, p: runtime_obj.handle_command("process_data", p))
         self.cmd_run_cycle.connect(lambda: runtime_obj.handle_command("run_cycle"))
         self.cmd_update_model.connect(lambda p: runtime_obj.handle_command("update_model", p))
-        self.cmd_explain_buffer.connect(lambda: runtime_obj.handle_command("explain_buffer"))
-        self.cmd_explain_local.connect(lambda pid: runtime_obj.handle_command("explain_local", pid))
-        self.cmd_explain_global.connect(lambda: runtime_obj.handle_command("explain_global"))
+        self.cmd_explain_buffer.connect(lambda: self._handle_explain_buffer_cmd(runtime_obj))
+        self.cmd_explain_local.connect(lambda pid: self._handle_explain_local_cmd(runtime_obj, pid))
+        self.cmd_explain_global.connect(lambda: self._handle_explain_global_cmd(runtime_obj))
+
+    def _get_on_demand_xai(self):
+        if not hasattr(self, "_on_demand_xai_manager") or self._on_demand_xai_manager is None:
+            from src.workers.xai_worker import XAIWorker
+            from src.managers.xai_manager import XAIManager
+            from src.services.semantic_enricher import SemanticEnricher
+            worker = XAIWorker(model_config={"feature_dim": 1})
+            worker.result_ready.connect(self.xai_result_received.emit)
+            enricher = SemanticEnricher(self.app_state)
+            self._on_demand_xai_manager = XAIManager(worker, enricher)
+            self._on_demand_xai_worker = worker
+        return self._on_demand_xai_manager
+
+    def _handle_explain_buffer_cmd(self, runtime_obj):
+        if runtime_obj and getattr(runtime_obj, "launcher", None) and getattr(runtime_obj.launcher, "_engine_worker", None):
+            runtime_obj.handle_command("explain_buffer")
+        else:
+            xai = self._get_on_demand_xai()
+            nodes = [n.id for n in self.app_state.get_all_nodes()] if hasattr(self.app_state, "get_all_nodes") else []
+            xai.process_buffer_strategy(nodes)
+
+    def _handle_explain_local_cmd(self, runtime_obj, sid: str):
+        resolved_sid = sid
+        if not resolved_sid and hasattr(self.app_state, "get_all_nodes"):
+            all_nodes = self.app_state.get_all_nodes()
+            if all_nodes:
+                resolved_sid = all_nodes[0].id
+        if not resolved_sid and hasattr(self.app_state, "get_all_data_sources"):
+            sources = self.app_state.get_all_data_sources()
+            if sources:
+                resolved_sid = sources[0].id
+        if not resolved_sid:
+            resolved_sid = "Sensor_Principal"
+
+        if runtime_obj and getattr(runtime_obj, "launcher", None) and getattr(runtime_obj.launcher, "_engine_worker", None):
+            runtime_obj.handle_command("explain_local", resolved_sid)
+        else:
+            xai = self._get_on_demand_xai()
+            node = self.app_state.get_node(resolved_sid) if hasattr(self.app_state, "get_node") else None
+            xai.explain_local(resolved_sid, node)
+
+    def _handle_explain_global_cmd(self, runtime_obj):
+        if runtime_obj and getattr(runtime_obj, "launcher", None) and getattr(runtime_obj.launcher, "_engine_worker", None):
+            runtime_obj.handle_command("explain_global")
+        else:
+            xai = self._get_on_demand_xai()
+            nodes_dict = {}
+            if hasattr(self.app_state, "get_all_nodes"):
+                for n in self.app_state.get_all_nodes():
+                    nodes_dict[n.id] = n
+            xai.explain_global(None, nodes_dict, seq_len=12)
 
     # =========================================================================
-    # INTERNAL HANDLERS (Dynamic State Completion)
+    # INTERNAL HANDLERS (Dynamic State Completion & Auto-Progression)
     # =========================================================================
+
+    def detect_completed_phases(self) -> set:
+        """Inspects disk artifacts via StorageManager to detect previously completed phases."""
+        completed = set()
+        if self.storage:
+            if hasattr(self.storage, "has_phase0_artifacts") and self.storage.has_phase0_artifacts():
+                completed.add("optimization")
+            if hasattr(self.storage, "has_phase1_artifacts") and self.storage.has_phase1_artifacts():
+                if "optimization" in completed:
+                    completed.add("bootstrap")
+        return completed
+
+    def sync_completed_phases(self) -> str:
+        """
+        Synchronizes internal state with persisted artifacts and returns the recommended active phase.
+        Returns: 'runtime', 'bootstrap', or 'optimization'.
+        """
+        detected = self.detect_completed_phases()
+        self._completed_phases.update(detected)
+
+        if "optimization" in self._completed_phases and "bootstrap" in self._completed_phases:
+            return "runtime"
+        elif "optimization" in self._completed_phases:
+            return "bootstrap"
+        return "optimization"
 
     def _on_optimization_finished(self):
         self._completed_phases.add("optimization")
         self.log_message.emit("🔒 Security: Phase 0 (Optimization) Verified.")
-        self.status_message.emit("Phase 0 Complete. Ready for Phase 1.")
-        self.optimization_finished.emit()
+
+        # Check if Phase 1 is also already completed on disk
+        if self.storage and hasattr(self.storage, "has_phase1_artifacts") and self.storage.has_phase1_artifacts():
+            self._completed_phases.add("bootstrap")
+            self.log_message.emit("⚡ Auto-Progression: Phase 1 (Bootstrap) artifacts already present. Skipping directly to Phase 2 (Live Operation).")
+            self.status_message.emit("Phase 0 & 1 Complete. Ready for Phase 2 (Live Operation).")
+            self.bootstrap_finished.emit()
+        else:
+            self.status_message.emit("Phase 0 Complete. Ready for Phase 1.")
+            self.optimization_finished.emit()
 
     def _on_bootstrap_finished(self):
         self._completed_phases.add("bootstrap")
@@ -180,7 +264,10 @@ class SystemController(QObject):
     def _execute_phase(self, phase_name: str, prerequisites: list) -> bool:
         """
         Generic State Machine executor. Evaluates rules before starting a mapped phase.
+        Automatically syncs with disk artifacts before verifying prerequisites.
         """
+        self.sync_completed_phases()
+
         for req in prerequisites:
             if req not in self._completed_phases:
                 msg = f"⛔ Phase '{req}' must be completed before starting '{phase_name}'."
@@ -202,14 +289,14 @@ class SystemController(QObject):
 
     # --- External Invocation API ---
     def start_optimization(self):
-        self._completed_phases.clear() # Reset state
+        # We don't blindly wipe completed_phases if artifacts exist, but if starting explicitly, allow rerun
         return self._execute_phase("optimization", prerequisites=[])
 
     def stop_optimization(self):
         self._halt_phase("optimization")
 
     def start_offline_bootstrap(self):
-        self._execute_phase("bootstrap", prerequisites=["optimization"])
+        return self._execute_phase("bootstrap", prerequisites=["optimization"])
 
     def stop_offline_bootstrap(self):
         self._halt_phase("bootstrap")

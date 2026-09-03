@@ -21,8 +21,9 @@
 from typing import Dict, Any, Optional
 
 from src.agents.linguist_agent import LinguistAgent
-from src.services.linguist_pipeline import LinguistPipeline
-from src.services.linguist_trainer import LinguistTrainer
+from src.pipeline.linguist_pipeline import LinguistPipeline
+from src.trainer.linguist_trainer import LinguistTrainer
+from src.utils.model_paths import get_distilroberta_base_path
 
 
 class LinguistFactory:
@@ -40,7 +41,7 @@ class LinguistFactory:
     ) -> LinguistAgent:
         cfg = (config or {}).get('linguist', {})
 
-        model_name = kwargs.get('model_name', cfg.get('model_name', "distilroberta-base"))
+        model_name = kwargs.get('model_name', cfg.get('model_name', get_distilroberta_base_path()))
         learning_rate = kwargs.get('learning_rate', cfg.get('lr', 1e-4))
 
         pipeline = LinguistPipeline(model_name=model_name)

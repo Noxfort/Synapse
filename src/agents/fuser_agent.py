@@ -20,11 +20,12 @@
 
 import numpy as np
 import torch
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional, Union, Tuple
 
 # Base Agent and Contracts
 from src.agents.base_agent import BaseAgent
-from src.domain.interfaces import ISensorCalibrator, IFusionPipeline
+from src.interfaces.providers import ISensorCalibrator
+from src.interfaces.pipelines import IFusionPipeline
 from src.services.dynamic_sensor_calibrator import DynamicSensorCalibrator
 from src.factories.fuser_model_factory import FuserModelFactory
 
@@ -36,7 +37,7 @@ class FuserAgent(BaseAgent):
     Pure Orchestrator Architecture (SOLID Compliant):
     - Single Responsibility: Coordinates high-level perception inference.
     - Delegations:
-      -> Neural GPU/Tensor Execution: IFusionPipeline (src/services/fusion_pipeline.py)
+      -> Neural GPU/Tensor Execution: IFusionPipeline (src/pipeline/fusion_pipeline.py)
       -> Dynamic Sensor Calibration: ISensorCalibrator (src/services/dynamic_sensor_calibrator.py)
     """
 
@@ -83,10 +84,17 @@ class FuserAgent(BaseAgent):
         """Delegates sensor observability state updates to the Calibrator service."""
         self.calibrator.update_observability(active_mask)
 
-    def inference(self, input_data: Dict[str, Any]) -> np.ndarray:
+    def inference(self, input_data: Dict[str, Any]) -> Union[np.ndarray, Dict[str, Any]]:
         """Unified inference entry point."""
         if "x_temporal" not in input_data:
             raise ValueError("Fuser inference requires 'x_temporal'.")
+
+        if "query_coords" in input_data and hasattr(self.pipeline, "execute_operator"):
+            return self.fuse_operator(
+                current_history=input_data["x_temporal"],
+                query_coords=input_data["query_coords"],
+                return_physics_residual=input_data.get("return_physics_residual", False)
+            )
 
         return self.fuse_state(
             current_history=input_data["x_temporal"],
@@ -95,6 +103,25 @@ class FuserAgent(BaseAgent):
             global_velocities=input_data.get("global_velocities"),
             edge_index=input_data.get("edge_index", self.cached_edge_index)
         )
+
+    def fuse_operator(
+        self,
+        current_history: Union[np.ndarray, torch.Tensor],
+        query_coords: Optional[Union[np.ndarray, torch.Tensor]] = None,
+        return_physics_residual: bool = False
+    ) -> Union[np.ndarray, Tuple[np.ndarray, Dict[str, float]]]:
+        """
+        Executes continuous Neural Operator inference (PI-DeepONet).
+        Maps sparse sensor observations to continuous physical traffic fields [density, speed, flow]
+        across arbitrary query coordinates in O(1) time.
+        """
+        if hasattr(self.pipeline, "execute_operator"):
+            return self.pipeline.execute_operator(
+                current_history=current_history,
+                query_coords=query_coords,
+                return_physics_residual=return_physics_residual
+            )
+        raise NotImplementedError("Configured pipeline does not support execute_operator.")
 
     def fuse_state(
         self,

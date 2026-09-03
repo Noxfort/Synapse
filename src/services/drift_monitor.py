@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -21,6 +21,9 @@
 import numpy as np
 from collections import deque
 from typing import Optional, Tuple, Dict
+from src.utils.logging_setup import get_logger
+
+logger = get_logger("DriftMonitor")
 
 class DriftMonitor:
     """
@@ -77,7 +80,7 @@ class DriftMonitor:
         
         self.bucket_range = (data_min - margin, data_max + margin)
         
-        print(f"[DriftMonitor] 📏 Auto-Scaling Bins: Range=[{self.bucket_range[0]:.2f}, {self.bucket_range[1]:.2f}] for {len(data)} samples.")
+        logger.debug(f"📏 Auto-Scaling Bins: Range=[{self.bucket_range[0]:.2f}, {self.bucket_range[1]:.2f}] for {len(data)} samples.")
 
         # 2. Compute Reference Histogram
         counts, _ = np.histogram(data, bins=self.num_buckets, range=self.bucket_range)
@@ -121,14 +124,11 @@ class DriftMonitor:
         kl_div = np.sum(curr_probs * np.log(curr_probs / self.ref_probs))
         
         # --- DEBUG LOGGING ---
-        # This will print to terminal so you can see WHY it is 0.0 or moving
-        # We only print if there's a change or periodically to avoid spam
         if self.total_samples % 50 == 0 or psi > 0.01:
-            # Show the top 3 buckets to see movement
             top_ref_idx = np.argmax(self.ref_probs)
             top_curr_idx = np.argmax(curr_probs)
-            print(f"[DriftMonitor] 🔍 Stats #{self.total_samples}: PSI={psi:.6f} | "
-                  f"Peak Bucket: Ref={top_ref_idx}->Curr={top_curr_idx}")
+            logger.debug(f"🔍 Stats #{self.total_samples}: PSI={psi:.6f} | "
+                         f"Peak Bucket: Ref={top_ref_idx}->Curr={top_curr_idx}")
 
         return {
             **base_metrics,

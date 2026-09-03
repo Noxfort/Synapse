@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -18,208 +18,268 @@
 # Author: Gabriel Moraes
 # Date: 2025-12-25
 
-import json
 import logging
-import csv
-import io
-import xml.etree.ElementTree as ET
+import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from PyQt6.QtCore import QThread, pyqtSignal
+from typing import Any, Callable, Dict, List, Optional
+
+from PyQt6.QtCore import QObject, pyqtSignal
+
+from src.infrastructure.parsers import (
+    BasePayloadParser,
+    CsvPayloadParser,
+    IPayloadParser,
+    JsonPayloadParser,
+    PolyglotPayloadParser,
+    RawFallbackPayloadParser,
+    XmlPayloadParser,
+    create_default_parser_registry,
+)
+from src.infrastructure.sensor_id_extractor import SensorIdExtractor
+from src.interfaces.sensor_gateway import IPolyglotPayloadParser, ISensorGateway, ISensorIdExtractor
+from src.utils.logging_setup import get_logger
+
+logger = get_logger("SensorGateway")
+
+
+# Global parser registry instance for backward compatibility
+global_parser_registry = create_default_parser_registry()
+
+
+# =============================================================================
+# HTTP SERVER & PROTOCOL HANDLER (Infrastructure Layer - SRP / DIP)
+# =============================================================================
+
+class SensorHTTPServer(HTTPServer):
+    """
+    HTTP Server holding explicit instance reference to the orchestrator gateway.
+    Eliminates class-level monkey patching and global static coupling.
+    """
+    allow_reuse_address = True
+
+    def __init__(self, server_address, RequestHandlerClass, gateway: 'SensorGateway'):
+        super().__init__(server_address, RequestHandlerClass)
+        self.gateway: 'SensorGateway' = gateway
+
 
 class IngestionHandler(BaseHTTPRequestHandler):
     """
-    Handles incoming HTTP POST requests from sensors (Ingestion Layer).
-    
-    Refactored V2 (Polyglot Support):
-    - Now accepts JSON, CSV, and XML.
-    - Normalizes all formats into a Python Dictionary.
-    - Ensures compatibility with legacy hardware (Inductive Loops, Radars).
+    Pure HTTP Ingestion Request Handler (SRP).
+    Focuses exclusively on HTTP protocol handling and delegates orchestration
+    to the injected gateway attached to the server instance.
     """
-    
-    # Injected by SensorGateway instance
-    signal_emitter = None 
+
+    server: SensorHTTPServer
 
     def do_POST(self):
-        """Receives data packets via POST on ANY endpoint."""
-        
+        """Receives data packets via POST on any endpoint and delegates to gateway."""
         try:
-            # 1. Read Raw Data
             content_length = int(self.headers.get('Content-Length', 0))
             if content_length == 0:
                 self.send_error(400, "Empty Request Body")
                 return
-                
+
             raw_body = self.rfile.read(content_length)
             decoded_body = raw_body.decode('utf-8', errors='ignore').strip()
             content_type = self.headers.get('Content-Type', '').lower()
-            
-            # 2. Universal Parsing (The Polyglot Logic)
-            payload = {}
-            
-            # A. JSON Strategy
-            if 'application/json' in content_type or decoded_body.startswith('{'):
-                try:
-                    payload = json.loads(decoded_body)
-                except json.JSONDecodeError:
-                    pass # Fallback to others if headers lied
+            client_ip = self.client_address[0] if self.client_address else "127_0_0_1"
 
-            # B. XML Strategy (Common in DATEX II / Legacy SOAP)
-            if not payload and ('xml' in content_type or decoded_body.startswith('<')):
-                payload = self._parse_xml(decoded_body)
+            # Delegate packet orchestration to the gateway instance via server context
+            if hasattr(self.server, 'gateway') and self.server.gateway is not None:
+                self.server.gateway.handle_inbound_request(
+                    content_type=content_type,
+                    decoded_body=decoded_body,
+                    client_ip=client_ip,
+                    request_path=self.path,
+                    content_length=content_length,
+                )
 
-            # C. CSV Strategy (Common in embedded Radars/Loops)
-            # If not JSON/XML and contains commas or semicolons
-            if not payload and (',' in decoded_body or ';' in decoded_body):
-                payload = self._parse_csv(decoded_body)
-
-            # D. Fallback (Raw Wrapper)
-            if not payload:
-                payload = {"raw_content": decoded_body, "format": "unknown"}
-
-            # 3. Identify Source (Heuristic for Routing)
-            source_id = self._extract_source_id(payload)
-            
-            # Fallback: Use IP if no ID found in payload
-            if not source_id:
-                client_ip = self.client_address[0]
-                clean_ip = client_ip.replace('.', '_').replace(':', '_')
-                source_id = f"device_{clean_ip}"
-
-            # 4. Emit RAW Payload to Engine (Thread-Safe)
-            if self.signal_emitter:
-                # Signal is connected to IngestionPipeline via InferenceEngine
-                self.signal_emitter.data_received.emit(str(source_id), payload)
-                
-            # 5. Response
+            # Response
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             self.wfile.write(b'{"status": "queued"}')
-            
+
         except Exception as e:
-            logging.error(f"[SensorGateway] Ingestion Error: {e}")
+            logger.error(f"❌ [SensorGateway] Ingestion Error: {e}", exc_info=True)
             self.send_error(500, str(e))
-
-    def _parse_xml(self, xml_string):
-        """Flattens basic XML to a dictionary."""
-        try:
-            root = ET.fromstring(xml_string)
-            data = {}
-            # Basic Strategy: Tag Name -> Value
-            # Does not handle deep nesting well, but sufficient for sensor telemetry
-            for child in root:
-                data[child.tag] = child.text
-            
-            # Also capture attributes of the root (often contains ID)
-            data.update(root.attrib)
-            return data
-        except ET.ParseError:
-            return {}
-
-    def _parse_csv(self, csv_string):
-        """Parses single-line CSV or Key-Value pairs."""
-        try:
-            data = {}
-            # Normalize separators
-            line = csv_string.replace(';', ',')
-            
-            # Scenario 1: Key=Value pairs (e.g., id=cam1,speed=50)
-            if '=' in line:
-                parts = line.split(',')
-                for p in parts:
-                    if '=' in p:
-                        k, v = p.split('=', 1)
-                        data[k.strip()] = v.strip()
-            
-            # Scenario 2: Pure Values (e.g., cam1,50,1200)
-            # We map to generic fields so Pipeline can hunt for numbers
-            else:
-                reader = csv.reader(io.StringIO(line))
-                for row in reader:
-                    for idx, val in enumerate(row):
-                        # Try to guess key based on position or value type
-                        data[f"field_{idx}"] = val
-            
-            return data
-        except Exception:
-            return {}
-
-    def _extract_source_id(self, data):
-        """Attempts to find an ID field in the dictionary."""
-        if not isinstance(data, dict):
-            return None
-            
-        # Common keys for ID (Expanded for XML/CSV usual headers)
-        candidates = [
-            'source_id', 'sensorId', 'id', 'camera_id', 'deviceId', 'uuid', 'ip', 'sensor_id',
-            'UnitID', 'StationID', 'DetectorID' # Common in XML/Traffic standards
-        ]
-        
-        # 1. Top level search
-        for k in candidates:
-            # Case-insensitive search
-            for data_k in data.keys():
-                if data_k.lower() == k.lower():
-                     return str(data[data_k])
-        
-        # 2. Nested 'metadata' or 'header' search (if JSON)
-        for sub in ['metadata', 'header', 'info', 'device']:
-            if sub in data and isinstance(data[sub], dict):
-                for k in candidates:
-                    if k in data[sub]:
-                        return str(data[sub][k])
-                        
-        return None
 
     def log_message(self, format, *args):
         """Suppress default HTTP logging to keep console clean."""
         pass
 
 
-class SensorGateway(QThread):
+# =============================================================================
+# SENSOR GATEWAY FACADE & ORCHESTRATOR (SOLID Architecture)
+# =============================================================================
+
+class SensorGateway(QObject):
     """
-    The Inbound Gateway.
-    Responsibility: Listens on port 8080 (default) for Sensor Data.
-    Technique: Runs a Blocking HTTP Server in a dedicated QThread.
-    """
+    The Inbound Sensor Gateway (Facade & Orchestrator).
     
-    # Inbound Signal (Sensor -> Synapse)
+    SOLID Architecture:
+    - [SRP] Exclusively coordinates ingestion lifecycle, parser dispatching, ID resolution, and data emission.
+    - [OCP] Open for custom parsers and ID extractors via dependency injection.
+    - [LSP] Conforms structurally to ISensorGateway protocol.
+    - [ISP] Replaces heavy QThread inheritance with composed background thread execution.
+    - [DIP] Decoupled from static globals; supports both pure Python callbacks and Qt signals.
+    """
+
+    # Qt Inbound Signals (Sensor -> Synapse Runtime)
     data_received = pyqtSignal(str, object)
-    
     server_started = pyqtSignal(int)
     server_error = pyqtSignal(str)
 
-    def __init__(self, host='0.0.0.0', port=8080):
-        super().__init__()
+    def __init__(
+        self,
+        host: str = '0.0.0.0',
+        port: int = 8080,
+        parser_registry: Optional[IPolyglotPayloadParser] = None,
+        id_extractor: Optional[ISensorIdExtractor] = None,
+        parent: Optional[QObject] = None,
+    ):
+        super().__init__(parent)
         self.host = host
         self.port = port
-        self.httpd = None
-        self.is_running = True
+        self._parser_registry: IPolyglotPayloadParser = parser_registry or create_default_parser_registry()
+        self._id_extractor: ISensorIdExtractor = id_extractor or SensorIdExtractor()
 
-    def run(self):
+        self._httpd: Optional[SensorHTTPServer] = None
+        self._server_thread: Optional[threading.Thread] = None
+        self._is_running = False
+        self._listeners: List[Callable[[str, Dict[str, Any]], None]] = []
+
+    # =========================================================================
+    # FACADE ORCHESTRATION PIPELINE
+    # =========================================================================
+
+    def register_listener(self, callback: Callable[[str, Dict[str, Any]], None]) -> None:
+        """Allows pure Python subscribers to receive sensor packets without Qt signal dependencies."""
+        if callback not in self._listeners:
+            self._listeners.append(callback)
+
+    def unregister_listener(self, callback: Callable[[str, Dict[str, Any]], None]) -> None:
+        """Removes a registered callback."""
+        if callback in self._listeners:
+            self._listeners.remove(callback)
+
+    def handle_inbound_request(
+        self,
+        content_type: str,
+        decoded_body: str,
+        client_ip: str,
+        request_path: str,
+        content_length: int,
+    ) -> Dict[str, Any]:
         """
-        Main Thread Loop: Runs the Blocking HTTP Server for Ingestion.
+        Orchestration pipeline:
+        1. Parse raw payload via polyglot strategy
+        2. Identify device ID via extractor heuristic
+        3. Notify Python listeners and emit Qt signals
         """
+        # 1. Universal Parsing (Delegated Strategy)
+        payload = self._parser_registry.parse(content_type, decoded_body)
+
+        # 2. Identify Source (Delegated Extractor with URL path support)
+        source_id = self._id_extractor.extract(payload, client_ip, request_path=request_path)
+
+        # 3. Formatted Terminal Reception Log
+        fmt_desc = content_type if content_type else "raw/auto"
+        logger.info(
+            f"📥 [SensorGateway] Recebido POST em '{request_path}' -> ID='{source_id}' (IP: {client_ip}) | "
+            f"Formato: {fmt_desc} | Tamanho: {content_length} bytes"
+        )
+
+        # 4. Notify Listeners (Pure Callback Interface)
+        for listener in self._listeners:
+            try:
+                listener(str(source_id), payload)
+            except Exception as ex:
+                logger.error(f"[SensorGateway] Error in packet listener: {ex}", exc_info=True)
+
+        # 5. Emit RAW Payload to Engine (Thread-Safe Qt Signal)
+        self.data_received.emit(str(source_id), payload)
+
+        return payload
+
+    # =========================================================================
+    # LIFECYCLE MANAGEMENT
+    # =========================================================================
+
+    def start(self) -> None:
+        """Starts the blocking HTTP Server in a background thread."""
+        if self._is_running:
+            logger.warning("[SensorGateway] Server is already running.")
+            return
+
+        self._is_running = True
+        self._server_thread = threading.Thread(
+            target=self._run_server,
+            name=f"SensorGateway-HTTP-{self.port}",
+            daemon=True,
+        )
+        self._server_thread.start()
+
+    def _run_server(self) -> None:
+        """Main Server Loop running in background thread."""
         try:
-            # Inject self into handler to access signals
-            IngestionHandler.signal_emitter = self
-            
-            self.httpd = HTTPServer((self.host, self.port), IngestionHandler)
+            self._httpd = SensorHTTPServer((self.host, self.port), IngestionHandler, gateway=self)
             self.server_started.emit(self.port)
-            print(f"[SensorGateway] 📥 Listening for sensors on {self.host}:{self.port} (JSON/CSV/XML supported)")
-            
-            while self.is_running:
-                self.httpd.handle_request()
-                
-        except Exception as e:
-            self.server_error.emit(str(e))
-            print(f"[SensorGateway] Server Crash: {e}")
+            logger.info(f"📥 Listening for sensors on {self.host}:{self.port} (Polyglot Parsers Active)")
 
-    def stop(self):
-        """Stops the server safely."""
-        self.is_running = False
-        if self.httpd:
-            self.httpd.server_close()
-        self.wait()
-        print("[SensorGateway] Stopped.")
+            while self._is_running and self._httpd:
+                self._httpd.handle_request()
+
+        except Exception as e:
+            if self._is_running:
+                self.server_error.emit(str(e))
+                logger.error(f"Server Crash: {e}", exc_info=True)
+        finally:
+            self._is_running = False
+
+    def stop(self) -> None:
+        """Stops the server safely and releases network resources."""
+        self._is_running = False
+        if self._httpd:
+            try:
+                self._httpd.server_close()
+            except Exception as e:
+                logger.debug(f"[SensorGateway] Exception while closing server: {e}")
+            self._httpd = None
+
+        if self._server_thread and self._server_thread.is_alive():
+            self._server_thread.join(timeout=1.0)
+            self._server_thread = None
+
+        logger.info("SensorGateway stopped.")
+
+    def is_running(self) -> bool:
+        """Returns True if the gateway server is actively listening."""
+        return self._is_running
+
+    def isRunning(self) -> bool:
+        """Backward-compatible alias matching QThread API."""
+        return self.is_running()
+
+    def wait(self, timeout: Optional[float] = None) -> None:
+        """Backward-compatible alias matching QThread.wait()."""
+        if self._server_thread and self._server_thread.is_alive():
+            self._server_thread.join(timeout=timeout)
+
+
+__all__ = [
+    "IPayloadParser",
+    "BasePayloadParser",
+    "JsonPayloadParser",
+    "XmlPayloadParser",
+    "CsvPayloadParser",
+    "RawFallbackPayloadParser",
+    "PolyglotPayloadParser",
+    "create_default_parser_registry",
+    "global_parser_registry",
+    "SensorIdExtractor",
+    "SensorHTTPServer",
+    "IngestionHandler",
+    "SensorGateway",
+]

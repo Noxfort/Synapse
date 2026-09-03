@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -24,6 +24,9 @@ import random
 import math
 from typing import Any, Optional
 from PyQt6.QtCore import QThread, pyqtSignal
+from src.utils.logging_setup import get_logger
+
+logger = get_logger("APIIngestor")
 
 class APIIngestor(QThread):
     """
@@ -62,7 +65,7 @@ class APIIngestor(QThread):
 
     def run(self):
         """Main polling loop."""
-        print(f"[APIIngestor] Started polling for '{self.source_id}' every {self.interval}s.")
+        logger.info(f"Started polling for '{self.source_id}' every {self.interval}s.")
         
         while self.is_running:
             try:
@@ -93,7 +96,7 @@ class APIIngestor(QThread):
         """Stops the thread safely."""
         self.is_running = False
         self.wait()
-        print(f"[APIIngestor] Stopped polling '{self.source_id}'.")
+        logger.info(f"Stopped polling '{self.source_id}'.")
 
     def _fetch_mock_data(self) -> float:
         """
@@ -125,10 +128,10 @@ class APIIngestor(QThread):
             return self._extract_first_numeric(data)
             
         except httpx.RequestError as e:
-            print(f"[APIIngestor] Network error for {self.source_id}: {e}")
+            logger.warning(f"Network error for {self.source_id}: {e}")
             return None
         except Exception as e:
-            print(f"[APIIngestor] Parsing error for {self.source_id}: {e}")
+            logger.error(f"Parsing error for {self.source_id}: {e}", exc_info=True)
             return None
 
     def _extract_first_numeric(self, data: Any) -> Optional[float]:

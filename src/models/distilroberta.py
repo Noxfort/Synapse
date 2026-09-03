@@ -18,11 +18,14 @@
 # Author: Gabriel Moraes
 # Date: 2026-08-17
 
+import os
 from typing import List, Optional, Tuple, Dict, Any
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModel
+
+from src.utils.model_paths import get_distilroberta_v1_path
 
 # Enable Tensor Cores globally for matrix multiplications and cuDNN operations
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -39,16 +42,30 @@ class DistilRobertaEmbeddingModel(nn.Module):
     3. Returning L2-normalized continuous semantic embeddings.
     
     Adheres to SOLID: zero file I/O, zero clustering state, zero external side-effects.
+    Frozen for offline deterministic semantic embedding extraction.
     """
 
     def __init__(
         self,
-        model_name: str = "sentence-transformers/all-distilroberta-v1",
-        transformer: Optional[nn.Module] = None
+        model_name: Optional[str] = None,
+        transformer: Optional[nn.Module] = None,
+        freeze_weights: bool = True
     ):
         super(DistilRobertaEmbeddingModel, self).__init__()
-        self.model_name = model_name
-        self.transformer = transformer or AutoModel.from_pretrained(model_name)
+        self.model_name = model_name or get_distilroberta_v1_path()
+        if transformer is not None:
+            self.transformer = transformer
+        else:
+            is_local = os.path.isdir(self.model_name)
+            self.transformer = AutoModel.from_pretrained(
+                self.model_name,
+                local_files_only=is_local
+            )
+
+        if freeze_weights:
+            for param in self.transformer.parameters():
+                param.requires_grad = False
+            self.transformer.eval()
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         """
@@ -83,7 +100,7 @@ class DistilRobertaSemanticExtractor:
 
     def __init__(
         self,
-        model_name: str = "sentence-transformers/all-distilroberta-v1",
+        model_name: Optional[str] = None,
         similarity_threshold: float = 0.80,
         tokenizer: Optional[AutoTokenizer] = None,
         model: Optional[DistilRobertaEmbeddingModel] = None,
@@ -96,12 +113,22 @@ class DistilRobertaSemanticExtractor:
 
         self.logger = logging.getLogger(self.__class__.__name__)
         self.similarity_threshold = similarity_threshold
+        resolved_model_path = model_name or get_distilroberta_v1_path()
+        self.model_name = resolved_model_path
         
         self.clusterer = clusterer or CosineSemanticClusterer(similarity_threshold=similarity_threshold, logger=self.logger)
         self.repository = repository or SafetensorsRepository(logger=self.logger)
         
-        self.tokenizer = tokenizer or AutoTokenizer.from_pretrained(model_name)
-        self.model = model or DistilRobertaEmbeddingModel(model_name=model_name)
+        if tokenizer is not None:
+            self.tokenizer = tokenizer
+        else:
+            is_local = os.path.isdir(resolved_model_path)
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                resolved_model_path,
+                local_files_only=is_local
+            )
+
+        self.model = model or DistilRobertaEmbeddingModel(model_name=resolved_model_path)
         
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)

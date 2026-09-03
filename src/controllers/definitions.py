@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Labs
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -16,7 +16,7 @@
 #
 # File: src/controllers/definitions.py
 # Author: Gabriel Moraes
-# Date: 16/02/2026
+# Date: 2026-08-31
 
 import logging
 from enum import Enum, auto

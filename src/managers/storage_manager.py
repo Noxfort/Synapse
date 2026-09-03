@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -21,7 +21,7 @@
 import os
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any, Dict
 from PyQt6.QtCore import pyqtSignal
 
 class StorageManager:
@@ -109,6 +109,76 @@ class StorageManager:
     def get_checkpoint_path(self) -> str:
         """Returns path for best_hparams.pth."""
         return str(self.checkpoint_dir)
+
+    def get_checkpoints_path(self) -> str:
+        """Backwards-compatible alias for get_checkpoint_path."""
+        return self.get_checkpoint_path()
+
+    def save_node_checkpoint(self, source_id: str, state: Dict[str, Any]) -> bool:
+        """Persists a single node's state checkpoint (PyTorch dictionary) to disk."""
+        try:
+            import torch
+            self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            file_path = self.checkpoint_dir / f"state_{source_id}.pth"
+            torch.save(state, str(file_path))
+            return True
+        except Exception as e:
+            logging.error(f"[StorageManager] Failed to save node checkpoint for '{source_id}': {e}")
+            return False
+
+    def load_node_checkpoint(self, source_id: str) -> Optional[Dict[str, Any]]:
+        """Loads and returns a node state checkpoint if it exists and is valid."""
+        try:
+            import torch
+            file_path = self.checkpoint_dir / f"state_{source_id}.pth"
+            if file_path.exists():
+                return torch.load(str(file_path), map_location="cpu", weights_only=False)
+            return None
+        except Exception as e:
+            logging.error(f"[StorageManager] Failed to load checkpoint for '{source_id}': {e}")
+            return None
+
+    def get_config_path(self) -> str:
+        """Returns path for configuration artifacts (ontology, schedule, auditor)."""
+        config_path = self.project_root / "data" / "config"
+        return str(config_path)
+
+    def has_phase0_artifacts(self) -> bool:
+        """Verifies if Phase 0 (AutoML) hyperparameter checkpoint exists and is valid (> 0 bytes)."""
+        try:
+            checkpoint_file = Path(self.get_checkpoint_path()) / "best_hparams.pth"
+            return checkpoint_file.exists() and checkpoint_file.stat().st_size > 0
+        except Exception as e:
+            logging.warning(f"[StorageManager] Error checking Phase 0 artifacts: {e}")
+            return False
+
+    def has_phase1_artifacts(self) -> bool:
+        """Verifies if Phase 1 (Offline Bootstrap) DataLake, Ontology, Schedule, and Auditor exist."""
+        try:
+            base_dir = Path(self.get_datalake_base_path())
+            golden_dir = Path(self.get_datalake_golden_path())
+            config_dir = Path(self.get_config_path())
+
+            if not base_dir.exists() or not golden_dir.exists() or not config_dir.exists():
+                return False
+
+            base_parquets = list(base_dir.glob("*.parquet"))
+            golden_parquets = list(golden_dir.glob("*.parquet"))
+
+            safetensors = config_dir / "ontology.safetensors"
+            peak_schedule = config_dir / "peak_schedule.json"
+            auditor_checkpoint = config_dir / "auditor_calibrated.pth"
+
+            return (
+                len(base_parquets) > 0
+                and len(golden_parquets) > 0
+                and safetensors.exists() and safetensors.stat().st_size > 0
+                and peak_schedule.exists() and peak_schedule.stat().st_size > 0
+                and auditor_checkpoint.exists() and auditor_checkpoint.stat().st_size > 0
+            )
+        except Exception as e:
+            logging.warning(f"[StorageManager] Error checking Phase 1 artifacts: {e}")
+            return False
     # =========================================================================
     #  CONNECTION LIFECYCLE (Simplified)
     # =========================================================================
@@ -146,6 +216,41 @@ class StorageManager:
         Ensures physical path integrity on boot.
         """
         self._ensure_directories()
+
+    def save_state(self, app_state: Any, file_path: str) -> bool:
+        """Persists the full AppState (sources, associations, map path) to a JSON file."""
+        try:
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            from src.infrastructure.json_source_storage import JsonSourceStorage
+            storage_helper = JsonSourceStorage(file_path)
+            data_sources = {s.id: s for s in app_state.get_all_data_sources()}
+            associations = app_state.sources._associations if hasattr(app_state, "sources") else {}
+            map_path = app_state.get_map_source_path()
+            return storage_helper.save(data_sources, associations, map_path)
+        except Exception as e:
+            logging.error(f"[StorageManager] Failed to save state to {file_path}: {e}")
+            return False
+
+    def load_state(self, app_state: Any, file_path: str) -> bool:
+        """Restores AppState (sources, associations, map path) from a JSON file."""
+        try:
+            if not os.path.exists(file_path):
+                return False
+            from src.infrastructure.json_source_storage import JsonSourceStorage
+            storage_helper = JsonSourceStorage(file_path)
+            sources, associations, map_path = storage_helper.load()
+            
+            if hasattr(app_state, "sources"):
+                app_state.sources._data_sources.clear()
+                app_state.sources._data_sources.update(sources)
+                app_state.sources._associations.clear()
+                app_state.sources._associations.update(associations)
+            if map_path:
+                app_state.set_map_source_path(map_path)
+            return True
+        except Exception as e:
+            logging.error(f"[StorageManager] Failed to load state from {file_path}: {e}")
+            return False
 
     def close(self):
         """No-op."""

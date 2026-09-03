@@ -127,9 +127,18 @@ class PIVAETCN(nn.Module):
         recon = self.final_layer(dec_out)
         
         if return_physics_residuals:
-            from src.physics.traffic_loss import TrafficPhysicsLoss
-            engine = self.physics_engine or TrafficPhysicsLoss(max_acceleration=self.max_acceleration)
-            residuals = engine.compute_losses(recon, orig_x=x)
+            residuals = self.compute_physics_residuals(recon, orig_x=x)
             return recon, mu, logvar, residuals
             
         return recon, mu, logvar
+
+    def compute_physics_residuals(
+        self,
+        recon: torch.Tensor,
+        orig_x: Optional[torch.Tensor] = None
+    ) -> Dict[str, torch.Tensor]:
+        """Computes physics loss residuals on reconstructed sequence."""
+        from src.physics.traffic_loss import TrafficPhysicsLoss
+        engine = self.physics_engine or TrafficPhysicsLoss(max_acceleration=self.max_acceleration)
+        return engine.compute_losses(recon, orig_x=orig_x)
+

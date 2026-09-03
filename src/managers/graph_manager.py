@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -26,13 +26,16 @@ from src.domain.app_state import AppState
 from src.domain.entities import MapNode, MapEdge
 
 # --- Components for TrafficNode Injection ---
-from src.engine.traffic_node import TrafficNode
+from src.node.traffic_node import TrafficNode
 from src.memory.spatial_memory import SpatialMemory
 from src.memory.temporal_memory import TemporalMemory
 from src.agents.specialist_agent import SpecialistAgent
 from src.services.historical_manager import HistoricalManager
 from src.kse.filter import RobustKalmanFilter
 from src.kse.definitions import PROFILES
+from src.utils.logging_setup import get_logger
+
+logger = get_logger("GraphManager")
 
 class GraphManager:
     """
@@ -59,6 +62,7 @@ class GraphManager:
         self.spatial_memory: Optional[SpatialMemory] = None
         self.edge_index: Optional[torch.Tensor] = None
         self.ordered_node_ids: List[str] = [] # Stores the strict order of nodes for tensors
+        self.direct_edge_metrics: Dict[str, Dict[str, Any]] = {} # Direct edge telemetry from associated sensors
         
         # Shared Service for all nodes
         try:
@@ -117,7 +121,7 @@ class GraphManager:
         # 3. Build Connectivity (Edge Index)
         self.edge_index = self._build_edge_index(map_nodes, map_edges)
         
-        print(f"[GraphManager] Graph Rebuilt: {len(self.nodes)} TrafficNodes Active.")
+        logger.info(f"Graph Rebuilt: {len(self.nodes)} TrafficNodes Active.")
 
     def get_node(self, node_id: str) -> Optional[TrafficNode]:
         """Returns the active TrafficNode object (for XAI/TCN)."""
@@ -130,32 +134,80 @@ class GraphManager:
         """
         return self.ordered_node_ids
 
-    def update_node_memory(self, source_id: str, payload: Any):
+    def update_node_memory(self, source_id: str, payload: Any, raw_payload: Any = None):
         """
-        Injects sensor data into the corresponding Node's memory.
+        Injects sensor data into the corresponding Node or Edge memory.
+        Handles both MapNode and MapEdge associations.
         """
-        # Resolving Association: Sensor -> Node
-        node_id = self.app_state.get_element_for_source(source_id)
-        if not node_id:
-            node_id = source_id
+        import time
+        # Resolving Association: Sensor -> Element (Node or Edge)
+        element_id = None
+        if hasattr(self.app_state, "get_element_for_source"):
+            element_id = self.app_state.get_element_for_source(source_id)
+        elif hasattr(self.app_state, "sources") and hasattr(self.app_state.sources, "get_element_for_source"):
+            element_id = self.app_state.sources.get_element_for_source(source_id)
             
-        if node_id in self.nodes:
-            # Parse payload
+        if not element_id:
+            element_id = source_id
+
+        # Parse numeric measurement value
+        val = 0.0
+        try:
+            if isinstance(payload, (int, float)):
+                val = float(payload)
+            elif isinstance(payload, list) and len(payload) > 0:
+                val = float(payload[0])
+            elif isinstance(payload, dict) and "value" in payload:
+                val = float(payload["value"])
+        except Exception:
             val = 0.0
-            try:
-                if isinstance(payload, (int, float)):
-                    val = float(payload)
-                elif isinstance(payload, list) and len(payload) > 0:
-                    val = float(payload[0])
-            except: val = 0.0
-            
-            # 1. Execute Node Step (Includes Physics KSE + AI Memory)
-            self.nodes[node_id].step(val)
-            
-            # 2. Update Spatial Memory (for GATv2 Global View)
+
+        # ── PATH A: Direct MapNode Match ──
+        if element_id in self.nodes:
+            self.nodes[element_id].step(val)
             current_feats = [0.0] * self.embedding_dim
             current_feats[0] = val
-            self.spatial_memory.update_node(node_id, current_feats)
+            if self.spatial_memory:
+                self.spatial_memory.update_node(element_id, current_feats)
+            return
+
+        # ── PATH B: MapEdge Match (Street Association) ──
+        target_edge = None
+        if hasattr(self.app_state, "get_edge"):
+            target_edge = self.app_state.get_edge(element_id)
+            
+        if not target_edge and hasattr(self.app_state, "get_all_edges"):
+            clean_id = element_id.lstrip("-")
+            for e in self.app_state.get_all_edges():
+                if e.id == element_id or e.id.lstrip("-") == clean_id:
+                    target_edge = e
+                    break
+
+        if target_edge:
+            # Store direct edge state in cache for PacketBuilder
+            speed_val = val if val <= 35.0 else val / 3.6  # Convert km/h to m/s if > 35
+            density_val = max(15.0, val) if val > 1.0 else 15.0
+            self.direct_edge_metrics[target_edge.id] = {
+                "value": val,
+                "speed": float(speed_val),
+                "density": float(density_val),
+                "timestamp": time.time()
+            }
+
+            # Propagate to connected junctions (from_node and to_node)
+            if target_edge.from_node in self.nodes:
+                self.nodes[target_edge.from_node].step(val)
+                current_feats = [0.0] * self.embedding_dim
+                current_feats[0] = val
+                if self.spatial_memory:
+                    self.spatial_memory.update_node(target_edge.from_node, current_feats)
+
+            if target_edge.to_node in self.nodes:
+                self.nodes[target_edge.to_node].step(val)
+                current_feats = [0.0] * self.embedding_dim
+                current_feats[0] = val
+                if self.spatial_memory:
+                    self.spatial_memory.update_node(target_edge.to_node, current_feats)
 
     def get_graph_snapshot(self) -> Tuple[torch.Tensor, torch.Tensor]:
         """

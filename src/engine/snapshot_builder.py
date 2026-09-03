@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -90,5 +90,10 @@ class SnapshotBuilder:
                 
             except Exception as e:
                 snapshot[traffic_node.source_id] = payload
+
+        # Inject direct edge telemetry from associated sensors if available
+        if hasattr(self.graph_manager, "direct_edge_metrics") and self.graph_manager.direct_edge_metrics:
+            for edge_id, edge_metric in self.graph_manager.direct_edge_metrics.items():
+                snapshot[edge_id] = edge_metric
                 
         return snapshot

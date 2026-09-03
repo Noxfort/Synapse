@@ -35,7 +35,7 @@ from torch.amp import autocast, GradScaler
 from src.agents.base_agent import BaseAgent
 from src.models.sinkhorn_cross_attention import SinkhornCrossAttention
 from src.services.fast_map_matcher import FastMapMatcher
-from src.services.cartographer_pipeline import CartographerPipeline
+from src.pipeline.cartographer_pipeline import CartographerPipeline
 from src.domain.entities import MapEdge, MapNode
 
 logger = logging.getLogger("Synapse.CartographerAgent")

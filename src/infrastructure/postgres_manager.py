@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -22,6 +22,9 @@ import psycopg2
 from psycopg2 import sql
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, QThread
+from src.utils.logging_setup import get_logger
+
+logger = get_logger("PostgresManager")
 
 class PostgresWorker(QObject):
     """
@@ -41,16 +44,30 @@ class PostgresWorker(QObject):
         Attempts to connect to the specific application database.
         """
         try:
+            schema = config.get("schema", "schema_synapse")
             conn = psycopg2.connect(
                 host=config.get("host", "localhost"),
                 port=config.get("port", 5432),
-                database=config.get("dbname", "synapse_db"),
-                user=config.get("user", "synapse_user"),
+                database=config.get("dbname", "banco_de_dados_noxfort"),
+                user=config.get("user", "user_synapse"),
                 password=config.get("password", "synapse123"),
+                options=f"-c search_path={schema},public",
                 connect_timeout=3
             )
             conn.close()
-            self.connection_checked.emit(True, "Connection successful.")
+            
+            # Save validated settings to config/settings.ini
+            try:
+                from src.database.db_engine import DatabaseEngine
+                pg_cfg = dict(config)
+                pg_cfg["db_type"] = "postgres"
+                pg_cfg["schema"] = schema
+                engine = DatabaseEngine(custom_config=pg_cfg)
+                engine.save_settings_to_ini(pg_cfg)
+            except Exception as se:
+                logger.warning(f"Could not persist settings.ini: {se}")
+
+            self.connection_checked.emit(True, f"Conexão bem-sucedida ao schema '{schema}'.")
         except Exception as e:
             # Clean up error message
             msg = str(e).split('\n')[0]
@@ -78,21 +95,21 @@ class PostgresWorker(QObject):
             conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
             cursor = conn.cursor()
             
-            target_user = target_config.get("user", "synapse_user")
+            target_user = target_config.get("user", "user_synapse")
             target_pass = target_config.get("password", "synapse123")
-            target_db = target_config.get("dbname", "synapse_db")
+            target_db = target_config.get("dbname", "banco_de_dados_noxfort")
+            target_schema = target_config.get("schema", "schema_synapse")
 
             # 2. Check if User exists, create if not
             cursor.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (target_user,))
             if not cursor.fetchone():
-                # Use SQL composition for safe identifier insertion
                 cmd_user = sql.SQL("CREATE USER {} WITH ENCRYPTED PASSWORD %s").format(
                     sql.Identifier(target_user)
                 )
                 cursor.execute(cmd_user, (target_pass,))
-                print(f"[PostgresManager] User '{target_user}' created.")
+                logger.info(f"User '{target_user}' created.")
             else:
-                print(f"[PostgresManager] User '{target_user}' already exists.")
+                logger.info(f"User '{target_user}' already exists.")
 
             # 3. Check if Database exists, create if not
             cursor.execute("SELECT 1 FROM pg_database WHERE datname=%s", (target_db,))
@@ -102,18 +119,71 @@ class PostgresWorker(QObject):
                     sql.Identifier(target_user)
                 )
                 cursor.execute(cmd_db)
-                print(f"[PostgresManager] Database '{target_db}' created.")
+                logger.info(f"Database '{target_db}' created.")
             else:
-                print(f"[PostgresManager] Database '{target_db}' already exists.")
+                logger.info(f"Database '{target_db}' already exists.")
 
-            # 4. Grant Privileges (Redundant if Owner, but good practice)
-            # Note: GRANT ALL ON DATABASE does not grant schema usage in newer PG versions, 
-            # but ownership usually suffices for setup.
-            
             cursor.close()
             conn.close()
-            
-            self.setup_finished.emit(True, "Database infrastructure initialized successfully.")
+            conn = None
+
+            # 4. Connect to target database as root to configure schema and permissions
+            conn_target = psycopg2.connect(
+                host=target_config.get("host", "localhost"),
+                port=target_config.get("port", 5432),
+                database=target_db,
+                user="postgres",
+                password=root_password,
+                connect_timeout=5
+            )
+            conn_target.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+            cur_target = conn_target.cursor()
+
+            # Grant DB permissions
+            cur_target.execute(
+                sql.SQL("GRANT ALL PRIVILEGES ON DATABASE {} TO {}").format(
+                    sql.Identifier(target_db),
+                    sql.Identifier(target_user)
+                )
+            )
+
+            # Create dedicated schema and grant authorization
+            cmd_schema = sql.SQL("CREATE SCHEMA IF NOT EXISTS {} AUTHORIZATION {}").format(
+                sql.Identifier(target_schema),
+                sql.Identifier(target_user)
+            )
+            cur_target.execute(cmd_schema)
+
+            cur_target.execute(
+                sql.SQL("GRANT ALL ON SCHEMA {} TO {}").format(
+                    sql.Identifier(target_schema),
+                    sql.Identifier(target_user)
+                )
+            )
+            logger.info(f"Schema '{target_schema}' provisioned for user '{target_user}'.")
+
+            cur_target.close()
+            conn_target.close()
+
+            # 5. Initialize Tables & Indexes inside target_schema via DatabaseEngine
+            try:
+                from src.database.db_engine import DatabaseEngine
+                pg_cfg = dict(target_config)
+                pg_cfg["db_type"] = "postgres"
+                pg_cfg["user"] = target_user
+                pg_cfg["password"] = target_pass
+                pg_cfg["dbname"] = target_db
+                pg_cfg["schema"] = target_schema
+                engine = DatabaseEngine(custom_config=pg_cfg)
+                engine.save_settings_to_ini(pg_cfg)
+                logger.info(f"Tables and indexes initialized in schema '{target_schema}'.")
+            except Exception as se:
+                logger.warning(f"Schema tables initialization notice: {se}")
+
+            self.setup_finished.emit(
+                True,
+                f"Usuário '{target_user}', schema '{target_schema}' e tabelas criados com sucesso!"
+            )
 
         except Exception as e:
             if conn: conn.close()

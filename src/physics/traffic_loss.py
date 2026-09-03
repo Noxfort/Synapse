@@ -16,12 +16,12 @@
 #
 # File: src/physics/traffic_loss.py
 # Author: Gabriel Moraes
-# Date: 2026-08-17
+# Date: 2026-08-20
 
 from typing import Dict, Optional
 import torch
 import torch.nn as nn
-from src.physics.physics_interfaces import IPhysicsLossEngine
+from src.interfaces.physics import IPhysicsLossEngine
 from src.physics.kinematics import (
     NonNegativityBoundsConstraint,
     KinematicAccelerationConstraint,
@@ -34,8 +34,9 @@ class TrafficPhysicsLoss(nn.Module):
     """
     Unified Physics-Informed Neural Network (PINN) Loss Aggregator.
     
-    Composes individual physical laws via Dependency Injection (DIP/OCP):
-    1. Bounds (Non-negativity: q >= 0, v >= 0, rho >= 0)
+    Composes individual physical laws via Dependency Injection (DIP/OCP)
+    and supports structural modality conditioning (Vehicle Count vs Speed vs Flow):
+    1. Bounds (Non-negativity: q >= 0, v >= 0, rho >= 0, N >= 0)
     2. Kinematics (Acceleration bound: |dv/dt| <= a_max)
     3. Smoothness (Suppresses high-frequency sensor noise)
     4. Continuum Conservation (LWR relationship: q = rho * v)
@@ -79,44 +80,56 @@ class TrafficPhysicsLoss(nn.Module):
         reconstruction: torch.Tensor,
         orig_x: Optional[torch.Tensor] = None,
         edge_index: Optional[torch.Tensor] = None,
+        semantic_type: Optional[str] = None,
         **kwargs
     ) -> Dict[str, torch.Tensor]:
         """
-        Computes all physics residuals for temporal sequences or multivariate states.
+        Computes physics residuals conditioned on the semantic modality of the sensor.
         
         Args:
             reconstruction: Tensor [Batch, SeqLen], [Batch, Channels, SeqLen], or [Batch, Nodes, Channels]
             orig_x: Optional ground-truth tensor
             edge_index: Optional graph connectivity [2, Num_Edges]
+            semantic_type: Modality identified by Linguist ("Vehicle Count", "Vehicle Speed", "Traffic Flow", etc.)
             
         Returns:
             Dictionary with individual components and 'total_physics_loss'.
         """
         device = reconstruction.device
+        sem = (semantic_type or "").lower()
         
-        # 1. Non-negativity Bounds
+        # 1. Non-negativity Bounds (Universal across all physical traffic quantities)
         loss_bounds = self.bounds_constraint.compute_residual(reconstruction)
         
         # 2. Kinematics & Temporal Smoothness
-        # Determine sequence dimension (last dimension)
         loss_kinematics = self.kinematics_constraint.compute_residual(reconstruction)
         loss_smooth = self.smoothness_constraint.compute_residual(reconstruction)
         
-        # 3. Continuum Conservation (q = rho * v)
-        # Check if 3 channels exist: Channel 0: q (flow), Channel 1: v (velocity), Channel 2: rho (density)
-        if reconstruction.dim() == 3 and reconstruction.shape[1] >= 3:
-            q = reconstruction[:, 0, :]
-            v = reconstruction[:, 1, :]
-            rho = reconstruction[:, 2, :]
-            loss_conservation = self.continuum_constraint.compute_residual(q=q, v=v, rho=rho)
-        elif reconstruction.dim() == 3 and reconstruction.shape[-1] >= 3:
-            # Format: [Batch, Num_Nodes, Channels]
-            q = reconstruction[:, :, 0]
-            v = reconstruction[:, :, 1]
-            rho = reconstruction[:, :, 2]
-            loss_conservation = self.continuum_constraint.compute_residual(q=q, v=v, rho=rho)
-        else:
+        # 3. Continuum Conservation (q = rho * v) - Only for fluid/multivariate regimes
+        if "count" in sem:
+            # Discrete counts do not follow macroscopic continuous product laws
             loss_conservation = torch.tensor(0.0, device=device)
+            w_kin = 0.1
+            w_cons = 0.0
+        elif "speed" in sem:
+            loss_conservation = torch.tensor(0.0, device=device)
+            w_kin = self.w_kinematics
+            w_cons = 0.0
+        else:
+            if reconstruction.dim() == 3 and reconstruction.shape[1] >= 3:
+                q = reconstruction[:, 0, :]
+                v = reconstruction[:, 1, :]
+                rho = reconstruction[:, 2, :]
+                loss_conservation = self.continuum_constraint.compute_residual(q=q, v=v, rho=rho)
+            elif reconstruction.dim() == 3 and reconstruction.shape[-1] >= 3:
+                q = reconstruction[:, :, 0]
+                v = reconstruction[:, :, 1]
+                rho = reconstruction[:, :, 2]
+                loss_conservation = self.continuum_constraint.compute_residual(q=q, v=v, rho=rho)
+            else:
+                loss_conservation = torch.tensor(0.0, device=device)
+            w_kin = self.w_kinematics
+            w_cons = self.w_conservation
             
         # 4. Spatial Conservation in Graphs
         if edge_index is not None and edge_index.numel() > 0 and reconstruction.dim() == 3:
@@ -125,12 +138,12 @@ class TrafficPhysicsLoss(nn.Module):
         else:
             loss_spatial = torch.tensor(0.0, device=device)
             
-        # Total Weighted PINN Loss
+        # Total Weighted PINN Loss Conditioned on Modality
         total_physics = (
             self.w_bounds * loss_bounds +
-            self.w_kinematics * loss_kinematics +
+            w_kin * loss_kinematics +
             self.w_smooth * loss_smooth +
-            self.w_conservation * loss_conservation +
+            w_cons * loss_conservation +
             self.w_spatial * loss_spatial
         )
         

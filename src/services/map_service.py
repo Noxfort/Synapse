@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -21,11 +21,12 @@
 import os
 import gzip
 import xml.etree.ElementTree as ET
+from urllib.parse import unquote, urlparse
 from pathlib import Path
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from src.utils.logging_setup import logger
+from src.logging.facade import get_logger
 from src.domain.entities import MapNode, MapEdge
 
 class MapService(QObject):
@@ -33,12 +34,12 @@ class MapService(QObject):
     The 'Cartographer' of Synapse.
     
     Responsibility:
-    - Parses SUMO Network files (.net.xml).
+    - Parses SUMO Network files (.net.xml and .net.xml.gz).
     - Extracts topological ground truth (Nodes & Edges).
     - Filters out internal simulation artifacts to build a clean graph.
     - Provides the 'Spatial Context' for the GATv2 Neural Network.
     
-    Refactoring V3: Added support for GZIP compressed maps (.net.xml.gz).
+    Refactoring V3: Added robust support for GZIP compressed maps and detailed logging.
     """
     
     # Signals
@@ -47,85 +48,164 @@ class MapService(QObject):
 
     def __init__(self):
         super().__init__()
+        self.logger = get_logger("MapService")
         self.nodes: List[MapNode] = []
         self.edges: List[MapEdge] = []
         self._node_lookup: Dict[str, MapNode] = {}
+        self.last_error: Optional[str] = None
 
     def load_network(self, file_path: str) -> bool:
         """
         Parses a .net.xml (or .net.xml.gz) file and populates the domain entities.
         """
-        path = Path(file_path)
-        if not path.exists():
-            msg = f"Map file not found: {file_path}"
-            logger.error(f"[MapService] ❌ {msg}")
+        self.last_error = None
+
+        if not file_path or not str(file_path).strip():
+            msg = "Caminho do arquivo de rede viária não foi informado."
+            self.logger.error(f"[MapService] ❌ {msg}")
+            self.last_error = msg
             self.error_occurred.emit(msg)
             return False
 
-        logger.info(f"[MapService] 🗺️ Loading Topology from {path.name}...")
+        # Clean and normalize path (handle file:// URL, %20 encoding, ~, quotes)
+        clean_path_str = str(file_path).strip().strip('"\'')
+        if clean_path_str.startswith("file://"):
+            clean_path_str = unquote(urlparse(clean_path_str).path)
+        clean_path_str = unquote(clean_path_str)
+        clean_path_str = os.path.expanduser(clean_path_str)
+
+        path = Path(clean_path_str).resolve()
+        if not path.exists():
+            msg = f"Arquivo de mapa não encontrado no disco: {clean_path_str}"
+            self.logger.error(f"[MapService] ❌ {msg}")
+            self.last_error = msg
+            self.error_occurred.emit(msg)
+            return False
+
+        self.logger.info(f"[MapService] 🗺️ Carregando Topologia SUMO de: '{path}' (Tamanho: {path.stat().st_size / 1024:.1f} KB)...")
 
         try:
-            # FIX V3: Handle GZIP compression transparently
-            if str(path).endswith('.gz'):
-                # Open with gzip in text mode (rt) with utf-8 encoding
-                source = gzip.open(path, 'rt', encoding='utf-8')
-            else:
-                # Open normally (let parse handle it or just path)
-                source = str(path)
+            # Check gzip magic bytes (0x1f, 0x8b)
+            is_gzip = False
+            try:
+                with open(path, 'rb') as f_check:
+                    header = f_check.read(2)
+                    if header == b'\x1f\x8b':
+                        is_gzip = True
+            except Exception as e:
+                self.logger.warning(f"[MapService] ⚠️ Não foi possível inspecionar cabeçalho do arquivo: {e}")
+                is_gzip = str(path).lower().endswith('.gz')
 
-            tree = ET.parse(source)
+            tree = None
+            if is_gzip or str(path).lower().endswith('.gz'):
+                try:
+                    with gzip.open(path, 'rb') as source:
+                        tree = ET.parse(source)
+                except Exception as gz_err:
+                    self.logger.warning(f"[MapService] ⚠️ Falha ao abrir como GZIP ({gz_err}). Tentando parser XML direto...")
+                    try:
+                        tree = ET.parse(str(path))
+                    except Exception as xml_err:
+                        raise RuntimeError(f"Falha ao processar arquivo GZIP/XML: {gz_err} / {xml_err}") from gz_err
+            else:
+                try:
+                    tree = ET.parse(str(path))
+                except Exception as xml_err:
+                    self.logger.warning(f"[MapService] ⚠️ Falha ao ler como XML puro ({xml_err}). Tentando como GZIP...")
+                    try:
+                        with gzip.open(path, 'rb') as source:
+                            tree = ET.parse(source)
+                    except Exception:
+                        raise xml_err
+
             root = tree.getroot()
-            
-            # If we opened a file object (gzip), assume we should close it?
-            # ET.parse doesn't close external file objects automatically in all Py versions,
-            # but usually garbage collection handles it. 
-            # Ideally use context manager, but ET.parse takes a stream.
-            if hasattr(source, 'close'):
-                source.close()
+            if root is None:
+                msg = f"Estrutura XML vazia no arquivo SUMO: {path.name}"
+                self.logger.error(f"[MapService] ❌ {msg}")
+                self.last_error = msg
+                self.error_occurred.emit(msg)
+                return False
 
             self.nodes.clear()
             self.edges.clear()
             self._node_lookup.clear()
 
+            def clean_tag(elem) -> str:
+                return elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+
             # --- STEP 1: Parse Junctions (Nodes) ---
-            for junction in root.findall('junction'):
-                # SUMO has 'internal' junctions inside intersections. We skip them.
-                j_type = junction.get('type')
+            junction_elements = [elem for elem in root.iter() if clean_tag(elem) == 'junction']
+            for junction in junction_elements:
+                j_type = junction.get('type', '')
                 if j_type == 'internal':
                     continue
 
                 j_id = junction.get('id')
-                try:
-                    x = float(junction.get('x'))
-                    y = float(junction.get('y'))
-                except (ValueError, TypeError):
-                    continue # Skip if coords are missing
+                if not j_id or j_id.startswith(':'):
+                    continue
 
-                # Create Entity
-                node = MapNode(id=j_id, x=x, y=y, node_type=str(j_type))
+                x_val: Optional[float] = None
+                y_val: Optional[float] = None
+
+                x_attr = junction.get('x')
+                y_attr = junction.get('y')
+                if x_attr is not None and y_attr is not None:
+                    try:
+                        x_val = float(x_attr)
+                        y_val = float(y_attr)
+                    except (ValueError, TypeError):
+                        pass
+
+                # Fallback to shape coordinates if x/y missing
+                if x_val is None or y_val is None:
+                    shape = junction.get('shape')
+                    if shape:
+                        try:
+                            first_pt = shape.strip().split()[0].split(',')
+                            x_val = float(first_pt[0])
+                            y_val = float(first_pt[1])
+                        except (ValueError, TypeError, IndexError):
+                            pass
+
+                if x_val is None or y_val is None:
+                    continue
+
+                tl_id = junction.get('tl') or junction.get('tlLogic')
+                if not tl_id and str(j_type).startswith('traffic_light'):
+                    tl_id = j_id
+
+                node = MapNode(id=j_id, x=x_val, y=y_val, node_type=str(j_type), tl_logic_id=tl_id)
                 self.nodes.append(node)
                 self._node_lookup[j_id] = node
 
-            logger.info(f"[MapService] Extracted {len(self.nodes)} physical junctions (Nodes).")
+            self.logger.info(f"[MapService] ✅ Extraídos {len(self.nodes)} cruzamentos/nós físicos (Nodes).")
+
+            if len(self.nodes) == 0:
+                msg = f"Nenhum nó viário físico válido encontrado no mapa SUMO: {path.name}"
+                self.logger.error(f"[MapService] ❌ {msg}")
+                self.last_error = msg
+                self.error_occurred.emit(msg)
+                return False
 
             # --- STEP 2: Parse Streets (Edges) ---
-            for edge in root.findall('edge'):
-                # Skip internal edges (connections inside the intersection box)
-                func = edge.get('function')
-                if func == 'internal' or func == 'crossing' or func == 'walkingarea':
+            edge_elements = [elem for elem in root.iter() if clean_tag(elem) == 'edge']
+            for edge in edge_elements:
+                func = edge.get('function', '')
+                if func in ('internal', 'crossing', 'walkingarea'):
                     continue
 
                 e_id = edge.get('id')
+                if not e_id or e_id.startswith(':'):
+                    continue
+
                 from_id = edge.get('from')
                 to_id = edge.get('to')
                 
                 # We only want edges connecting valid physical nodes
                 if from_id in self._node_lookup and to_id in self._node_lookup:
-                    
-                    lanes = edge.findall('lane')
+                    lanes = [child for child in edge if clean_tag(child) == 'lane']
                     
                     # --- A. Extract Geometry (Shape) ---
-                    # Priority: lane[0].shape > edge.shape > fallback to node coords
                     shape_points: List[Tuple[float, float]] = []
                     shape_str = None
                     
@@ -152,12 +232,16 @@ class MapService(QObject):
                     # --- B. Extract Length ---
                     try:
                         length = float(edge.get('length', 0.0))
-                        if length == 0.0 and lanes:
+                        if length <= 0.0 and lanes:
                             length = float(lanes[0].get('length', 1.0))
+                        if length <= 0.0:
+                            fn = self._node_lookup[from_id]
+                            tn = self._node_lookup[to_id]
+                            length = max(1.0, float(((fn.x - tn.x) ** 2 + (fn.y - tn.y) ** 2) ** 0.5))
                     except (ValueError, TypeError):
                         length = 1.0
                     
-                    # --- C. Extract Speed & Lane Count (for Cartographer features) ---
+                    # --- C. Extract Speed & Lane Count ---
                     speed = 13.89  # Default ~50 km/h
                     num_lanes = len(lanes) if lanes else 1
                     try:
@@ -166,35 +250,38 @@ class MapService(QObject):
                     except (ValueError, TypeError):
                         pass
 
-                    # Create Entity
                     map_edge = MapEdge(
                         id=e_id,
                         from_node=from_id,
                         to_node=to_id,
                         shape=shape_points,
-                        weight=length
+                        real_name=edge.get('name'),
+                        weight=length,
+                        length=length,
+                        max_speed=speed,
+                        lanes=num_lanes
                     )
-                    # Store extra metadata for Cartographer (avoids changing dataclass)
                     map_edge._speed = speed
                     map_edge._num_lanes = num_lanes
                     self.edges.append(map_edge)
 
-            logger.info(f"[MapService] Extracted {len(self.edges)} navigable streets (Edges).")
+            self.logger.info(f"[MapService] ✅ Extraídas {len(self.edges)} vias viárias navegáveis (Edges).")
             
             # Emit success
+            self.last_error = None
             self.map_loaded.emit(len(self.nodes), len(self.edges))
             return True
 
         except ET.ParseError as e:
-            msg = f"XML Parsing Error: {e}"
-            logger.error(f"[MapService] ❌ {msg}")
+            msg = f"Erro de sintaxe XML ao analisar rede viária ({path.name}): {e}"
+            self.logger.error(f"[MapService] ❌ {msg}", exc_info=True)
+            self.last_error = msg
             self.error_occurred.emit(msg)
             return False
         except Exception as e:
-            msg = f"Critical Map Load Error: {e}"
-            logger.error(f"[MapService] ❌ {msg}")
-            import traceback
-            traceback.print_exc()
+            msg = f"Erro crítico ao processar rede viária SUMO ({path.name}): {e}"
+            self.logger.error(f"[MapService] ❌ {msg}", exc_info=True)
+            self.last_error = msg
             self.error_occurred.emit(msg)
             return False
 

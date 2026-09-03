@@ -15,7 +15,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 # File: src/infrastructure/hft_serializers.py
-# Author: Gabriel Mateus
+# Author: Gabriel Moraes
 # Date: 2026-02-19
 
 import os

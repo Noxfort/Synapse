@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -18,95 +18,105 @@
 # Author: Gabriel Moraes
 # Date: 2025-12-03
 
-import torch
-import os
-from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
+import torch
 
-# Import Domain
-from src.engine.traffic_node import TrafficNode
-from src.memory.temporal_memory import TemporalMemory
-from src.factories.agent_factory import AgentFactory
-from src.services.historical_manager import HistoricalManager
-from src.managers.graph_manager import GraphManager
+from src.interfaces.node import (
+    ITrafficNode,
+    INodeCheckpointStorage,
+    INodeFactory
+)
+from src.factories.node_factory import NodeFactory
 from src.managers.storage_manager import StorageManager
-from src.kse.filter import RobustKalmanFilter
-from src.kse.definitions import PROFILES
+from src.utils.logging_setup import get_logger
+
+logger = get_logger("NodeManager")
+
 
 class NodeManager:
     """
     Manages the lifecycle and state of Traffic Nodes (Sensors).
     
-    Refactored V3 (Fallback Support):
-    - Added 'trigger_fallback()' to handle sensor errors reported by the Pipeline.
-    - This delegates to the node's 'ghost_step()' method (MEH/Historical data).
+    SOLID & DIP Architecture:
+    - [SRP] Exclusively coordinates node lifecycle, probation timing, and orchestration delegation.
+    - [DIP] Depends on abstract contracts (ITrafficNode, INodeCheckpointStorage, INodeFactory).
+    - [OCP] Pluggable checkpoint storage and node creation factories injected via constructor.
     """
 
-    def __init__(self, config: dict, device: torch.device, 
-                 historical_manager: HistoricalManager, 
-                 graph_manager: Optional[GraphManager] = None):
-        
-        self.config = config
-        self.device = device
+    def __init__(
+        self,
+        config: Optional[dict] = None,
+        device: Optional[torch.device] = None,
+        historical_manager: Optional[Any] = None,
+        graph_manager: Optional[Any] = None,
+        storage: Optional[INodeCheckpointStorage] = None,
+        node_factory: Optional[Union[INodeFactory, Any]] = None,
+        probation_duration: float = 60.0
+    ):
+        self.config = config or {}
+        self.device = device or torch.device("cpu")
         self.historical_manager = historical_manager
         self.graph_manager = graph_manager
         
-        self.storage = StorageManager()
-        self._nodes: Dict[str, TrafficNode] = {}
+        # Injected abstractions with sensible defaults (DIP)
+        self.storage: INodeCheckpointStorage = storage or StorageManager()
+        self.node_factory = node_factory or NodeFactory
+        
+        self._nodes: Dict[str, ITrafficNode] = {}
         
         # Probation State: {source_id: start_timestamp}
         self.probation_nodes: Dict[str, datetime] = {}
-        self.probation_duration = 60.0 # 1 minute test duration
+        self.probation_duration = probation_duration
         
-        self.seq_len = 60
-        self.feature_dim = 1
+        # Extract dimensions from config
+        self.feature_dim = self.config.get("feature_dim", 1)
         self.embedding_dim = 32
 
-    def register_node(self, source_id: str) -> bool:
-        """
-        Creates a new node. Tries to restore previous state (brain) if available.
-        """
+    def add_node(self, source_id: str) -> bool:
+        """Instantiates and registers a new TrafficNode via the factory abstraction."""
         if source_id in self._nodes:
             return False
             
-        memory = TemporalMemory(self.seq_len, self.feature_dim)
-        agent = AgentFactory.create_specialist(
-            config=self.config,
-            input_dim=self.feature_dim,
-            output_dim=self.embedding_dim
-        )
-        agent.to(self.device)
-        
-        # Determine Sensor Profile based on ID naming convention (Moved here for DIP)
-        profile = PROFILES["DEFAULT"]
-        if "cam" in source_id.lower(): profile = PROFILES["CAMERA"]
-        elif "loop" in source_id.lower(): profile = PROFILES["INDUCTIVE"]
-        kse = RobustKalmanFilter(node_id=source_id, initial_val=0.0, profile=profile)
+        create_fn = getattr(self.node_factory, "create_node", None) or getattr(self.node_factory, "create_traffic_node", None)
+        if callable(create_fn):
+            node = create_fn(
+                source_id=source_id,
+                config=self.config,
+                device=self.device,
+                historical_manager=self.historical_manager,
+                graph_manager=self.graph_manager,
+                feature_dim=self.feature_dim,
+                embedding_dim=self.embedding_dim
+            )
+        elif callable(self.node_factory):
+            node = self.node_factory(
+                source_id=source_id,
+                config=self.config,
+                device=self.device,
+                historical_manager=self.historical_manager,
+                graph_manager=self.graph_manager,
+                feature_dim=self.feature_dim,
+                embedding_dim=self.embedding_dim
+            )
+        else:
+            raise TypeError(f"Invalid node factory provided: {self.node_factory}")
 
-        node = TrafficNode(
-            source_id=source_id,
-            memory=memory,
-            agent=agent,
-            historical_manager=self.historical_manager,
-            physics_engine=kse,
-            graph_manager=self.graph_manager
-        )
-        
         # Restore State (Hibernation Wake-up)
         if self._load_node_checkpoint(node):
-            print(f"[NodeManager] 🕯️ Node '{source_id}' restored. Entering Probation.")
+            logger.info(f"🕯️ Node '{source_id}' restored. Entering Probation.")
             self.probation_nodes[source_id] = datetime.now()
-        
+
         self._nodes[source_id] = node
         return True
 
-    def remove_node(self, source_id: str):
+    def remove_node(self, source_id: str) -> None:
+        """Removes a registered node and cleans up probation state."""
         if source_id in self._nodes:
             del self._nodes[source_id]
             if source_id in self.probation_nodes:
                 del self.probation_nodes[source_id]
-            print(f"[NodeManager] Removed Node: {source_id}")
+            logger.info(f"Removed Node: {source_id}")
 
     def update_node(self, source_id: str, value: float) -> Optional[Dict[str, Any]]:
         """
@@ -120,7 +130,7 @@ class NodeManager:
         node = self._nodes[source_id]
         result = node.step(value)
         
-        # Inject Status Override for UI
+        # Inject Status Override for UI during probation
         if source_id in self.probation_nodes:
             elapsed = (datetime.now() - self.probation_nodes[source_id]).total_seconds()
             remaining = int(self.probation_duration - elapsed)
@@ -131,69 +141,63 @@ class NodeManager:
     def trigger_fallback(self, source_id: str, error_msg: str) -> Optional[Dict[str, Any]]:
         """
         Orchestrates the FALLBACK step (Ghost Step) when a sensor fails.
-        Uses MEH (Historical Data) to keep the TCN/Transformer running.
+        Uses historical data to keep forecasting pipelines active.
         """
         if source_id not in self._nodes:
             return None
             
-        print(f"[NodeManager] 🚑 Triggering Fallback for {source_id}: {error_msg}")
+        logger.warning(f"🚑 Triggering Fallback for {source_id}: {error_msg}")
         node = self._nodes[source_id]
         
-        # Ghost Step uses historical data
+        # Ghost Step uses historical data / physics imputation
         result = node.ghost_step()
         return result
 
-    def save_all_nodes(self):
-        """Persists the state of all active nodes to disk."""
-        if not self._nodes: return
+    def save_all_nodes(self) -> None:
+        """Persists the state of all active nodes using the injected storage abstraction."""
+        if not self._nodes:
+            return
         
-        print("[NodeManager] 💾 Hibernating: Saving state for all nodes...")
-        ckpt_dir = Path(self.storage.get_checkpoints_path())
-        ckpt_dir.mkdir(parents=True, exist_ok=True)
-        
+        logger.info("💾 Hibernating: Saving state for all nodes...")
         count = 0
         for nid, node in self._nodes.items():
             try:
                 state = node.get_state()
-                filename = f"state_{nid}.pth"
-                path = ckpt_dir / filename
-                torch.save(state, str(path))
-                count += 1
+                if self.storage.save_node_checkpoint(nid, state):
+                    count += 1
             except Exception as e:
-                print(f"[NodeManager] Failed to save {nid}: {e}")
+                logger.error(f"Failed to save state for {nid}: {e}")
                 
-        print(f"[NodeManager] Saved {count} nodes to {ckpt_dir}.")
+        logger.info(f"Saved {count} node checkpoints.")
 
     # --- Internal Helpers ---
 
-    def _load_node_checkpoint(self, node: TrafficNode) -> bool:
-        filename = f"state_{node.source_id}.pth"
-        path = Path(self.storage.get_checkpoints_path()) / filename
-        
-        if path.exists():
-            try:
-                state = torch.load(str(path))
+    def _load_node_checkpoint(self, node: ITrafficNode) -> bool:
+        """Restores checkpoint state for a node using the injected storage abstraction."""
+        try:
+            state = self.storage.load_node_checkpoint(node.source_id)
+            if state is not None:
                 node.set_state(state)
                 return True
-            except Exception as e:
-                print(f"[NodeManager] Corrupted checkpoint for {node.source_id}: {e}")
+        except Exception as e:
+            logger.error(f"Corrupted checkpoint for {node.source_id}: {e}")
         return False
 
-    def _check_probation(self, source_id: str):
+    def _check_probation(self, source_id: str) -> None:
         if source_id in self.probation_nodes:
             start_time = self.probation_nodes[source_id]
             elapsed = (datetime.now() - start_time).total_seconds()
             
             if elapsed > self.probation_duration:
-                print(f"[NodeManager] 🎉 Node '{source_id}' passed probation!")
+                logger.info(f"🎉 Node '{source_id}' passed probation!")
                 del self.probation_nodes[source_id]
 
     # --- Accessors ---
 
-    def get_node(self, source_id: str) -> Optional[TrafficNode]:
+    def get_node(self, source_id: str) -> Optional[ITrafficNode]:
         return self._nodes.get(source_id)
 
-    def get_all_nodes(self) -> Dict[str, TrafficNode]:
+    def get_all_nodes(self) -> Dict[str, ITrafficNode]:
         return self._nodes
 
     def get_ready_nodes_ids(self) -> List[str]:

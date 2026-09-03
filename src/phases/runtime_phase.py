@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -23,6 +23,9 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 from src.domain.app_state import AppState
 from src.domain.entities import SourceType
+from src.utils.logging_setup import get_logger
+
+logger = get_logger("RuntimePhase")
 
 # --- Internal Components (The "Split" Logic) ---
 from src.phases.runtime_connector import RuntimeConnector
@@ -83,8 +86,8 @@ class RuntimePhase(QObject):
     # =========================================================================
 
     def start(self) -> bool:
-        """Entry point: Validates live sources, then starts the connection sequence."""
-        # Mandatory Check: at least 1 LOCAL + 1 GLOBAL live source
+        """Entry point: Validates live sources, starts compute & ingestion, and arms HFT upon 1+1 rule fulfillment."""
+        # Mandatory Check: at least 1 LOCAL + 1 GLOBAL live source registered
         all_sources = self.app_state.get_all_data_sources()
         
         live_sources = [
@@ -108,9 +111,43 @@ class RuntimePhase(QObject):
             self.error_occurred.emit(error_msg)
             return False
         
-        # Validation passed — start the connector
-        self.connector.start_connection()
+        logger.info("🚀 [Fase 2: Operação Online] Ativando ingestão de dados ao vivo:")
+        logger.info(f"   📡 Sensores Locais ({sum(1 for s in live_sources if s.is_local)}): Gateway HTTP ativo escutando POSTs na porta 8080.")
+        logger.info(f"   ☁️ Sensores Globais ({sum(1 for s in live_sources if not s.is_local)}): Polling ativo para APIs externas.")
+
+        # 1. Start compute & ingestion engines first (SensorGateway + IngestionWorker + Linguist)
+        self.launcher.start_engines()
+
+        # 2. Evaluate 1+1 Rule for HFT Network Transport
+        self._check_one_plus_one_and_connect(initial=True)
         return True
+
+    def _is_one_plus_one_satisfied(self) -> bool:
+        """Checks if at least 1 LOCAL and at least 1 GLOBAL sensor are ACTIVE and validated."""
+        from src.domain.entities import SourceStatus
+        all_sources = self.app_state.get_all_data_sources()
+        live_sources = [
+            s for s in all_sources
+            if s.source_type != SourceType.SUMO_NET_XML
+            and not (isinstance(s.connection_string, str) and s.connection_string.endswith(".parquet"))
+            and "Historical Base" not in s.name
+        ]
+        has_active_local = any(s.is_local and s.status == SourceStatus.ACTIVE for s in live_sources)
+        has_active_global = any(not s.is_local and s.status == SourceStatus.ACTIVE for s in live_sources)
+        return has_active_local and has_active_global
+
+    def _check_one_plus_one_and_connect(self, initial: bool = False):
+        """Monitors 1+1 rule compliance before opening HFT gRPC channel to CARINA."""
+        if self.connector.is_connecting or (self.connector.hft_worker and self.connector.hft_worker.isRunning()):
+            return
+
+        if self._is_one_plus_one_satisfied():
+            logger.info("🎯 [Regra 1+1] ✅ Regra 1+1 cumprida com sucesso! Pelo menos 1 sensor Local e 1 Global estão ATIVOS e validados.")
+            logger.info("🔗 [HFT.Transport] Iniciando conexão gRPC com CARINA (localhost:50051)...")
+            self.connector.start_connection()
+        else:
+            if initial:
+                logger.info("⏳ [Regra 1+1] Aguardando validação dos sensores (mínimo 1 Local + 1 Global ATIVO)... O canal gRPC (localhost:50051) permanecerá FECHADO até o cumprimento da regra.")
 
     def stop(self):
         """Stops both network and compute layers."""
@@ -127,17 +164,13 @@ class RuntimePhase(QObject):
     # =========================================================================
 
     def _wire_internals(self):
-        """Connects the Connector and Launcher to each other."""
-        
-        # A. Start Sequence: Connector Success -> Start Engines
-        self.connector.connection_ready_to_start.connect(self.launcher.start_engines)
-        
-        # B. Data Pipeline: Physics Packet Ready -> Send via Network
+        """Connects internal event hooks."""
+        # Data Pipeline: Physics Packet Ready -> Send via Network
         self.launcher.packet_ready_to_send.connect(self.connector.send_packet)
         
-        # C. Lifecycle Synchronization
-        # If connection fails hard, we might want to stop engines (optional, simpler to keep separate for now)
-        pass
+        # When Linguist updates/promotes or source updates in AppState, re-check 1+1 rule
+        self.launcher.linguist_update.connect(lambda *_: self._check_one_plus_one_and_connect())
+        self.app_state.data_source_added.connect(lambda *_: self._check_one_plus_one_and_connect())
 
     def _wire_outputs(self):
         """Connects sub-components signals to this Facade's signals."""

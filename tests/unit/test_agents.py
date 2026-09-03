@@ -1,6 +1,28 @@
+# SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
+# Copyright (C) 2026 Noxfort Systems
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# File: tests/unit/test_agents.py
+# Author: Gabriel Moraes
+# Date: 2026-08-29
+
+import os
 import pytest
 import torch
 import numpy as np
+import pandas as pd
 from src.agents.specialist_agent import SpecialistAgent
 from src.agents.coordinator_agent import CoordinatorAgent
 from src.agents.fuser_agent import FuserAgent
@@ -82,3 +104,48 @@ def test_auditor_agent_anomaly_scoring():
     assert "is_anomaly" in result
     assert "score" in result
     assert isinstance(result["score"], float)
+
+def test_sanitization_stage_handles_integer_dtypes(tmp_path):
+    from src.stages.sanitization_stage import SanitizationStage
+    
+    input_file = str(tmp_path / "raw_data.parquet")
+    golden_dir = str(tmp_path / "golden")
+    base_dir = str(tmp_path / "base")
+    golden_path = os.path.join(golden_dir, "golden_v1.parquet")
+    
+    os.makedirs(golden_dir, exist_ok=True)
+    os.makedirs(base_dir, exist_ok=True)
+    
+    n_rows = 50
+    df = pd.DataFrame({
+        "sensor_id": ["sensor_1"] * (n_rows // 2) + ["sensor_2"] * (n_rows // 2),
+        "timestamp": pd.date_range("2026-01-01", periods=n_rows, freq="5min"),
+        "speed_val": pd.Series(np.random.randint(10, 80, size=n_rows), dtype="Int64"),
+        "flow_val": pd.Series(np.random.randint(100, 1000, size=n_rows), dtype="int64"),
+        "intensity_val": np.random.uniform(0.1, 0.9, size=n_rows).astype(np.float32)
+    })
+    df.to_parquet(input_file)
+    
+    logs = []
+    stage = SanitizationStage(
+        synapse_root=str(tmp_path),
+        log_cb=lambda msg: logs.append(msg),
+        progress_cb=lambda p: None,
+        check_stop_cb=lambda: False
+    )
+    
+    shared_context = {
+        "base_dir": base_dir,
+        "golden_dir": golden_dir,
+        "golden_path": golden_path
+    }
+    
+    success = stage.execute(shared_context)
+    assert success is True
+    assert os.path.exists(golden_path)
+    
+    df_golden = pd.read_parquet(golden_path)
+    assert len(df_golden) == n_rows
+    assert np.issubdtype(df_golden["speed_val"].dtype, np.floating)
+    assert np.issubdtype(df_golden["flow_val"].dtype, np.floating)
+

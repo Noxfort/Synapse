@@ -1,5 +1,22 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
 # Copyright (C) 2026 Noxfort Systems
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# File: tests/unit/test_database_importer.py
+# Author: Gabriel Moraes
+# Date: 2026-08-31
 
 import os
 import pytest
@@ -7,10 +24,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from unittest.mock import MagicMock
-from PyQt6.QtWidgets import QApplication
-
 from src.services.database_importer import DatabaseImporter
-from ui.wizards.import_wizard import ImportWizard, IntroPage, ConfigPage, ProcessingPage
 
 @pytest.fixture(scope="module")
 def qapp():
@@ -133,55 +147,23 @@ def test_database_importer_nonexistent_file(temp_datalake):
     assert "File not found" in msg
 
 
-def test_import_wizard_no_target_interval(qapp):
-    """Verify that ImportWizard does NOT expose target interval / spin_freq fields."""
-    wizard = ImportWizard()
-    config_page = wizard.page_config
+def test_database_importer_direct_callbacks(temp_datalake, valid_parquet_file):
+    """Test DatabaseImporter invoking direct callbacks (for headless execution)."""
+    mock_sm, base_dir = temp_datalake
+    importer = DatabaseImporter(storage_manager=mock_sm)
     
-    # Verify spin_freq and target_freq are absent
-    assert not hasattr(config_page, "spin_freq")
-    assert not hasattr(wizard, "target_freq")
-    assert wizard.field("target_freq") is None
+    progress_updates = []
+    log_messages = []
+    finished_results = []
     
-    wizard.close()
-
-
-def test_import_wizard_parquet_inspection(qapp, valid_parquet_file):
-    """Verify that ConfigPage inspects and displays rich metadata from Parquet."""
-    wizard = ImportWizard()
-    wizard.source_path = valid_parquet_file
+    importer.on_progress = lambda p: progress_updates.append(p)
+    importer.on_log = lambda m: log_messages.append(m)
+    importer.on_finished = lambda ok, m: finished_results.append((ok, m))
     
-    config_page = wizard.page_config
-    config_page.initializePage()
+    importer.execute_import(valid_parquet_file)
     
-    items = [config_page.list_tables.item(i).text() for i in range(config_page.list_tables.count())]
-    all_text = "\n".join(items)
-    
-    assert "valid_traffic.parquet" in all_text
-    assert "Total Rows" in all_text
-    assert "Time Column" in all_text
-    assert "timestamp" in all_text
-    assert "Historical span requirement met" in all_text
-    assert "Identified Sources/Sensors" in all_text
-    
-    wizard.close()
-
-
-def test_import_wizard_rejects_db_in_inspection(qapp, tmp_path):
-    """Verify that ConfigPage displays an error if a non-parquet file is selected."""
-    db_file = tmp_path / "test.db"
-    db_file.write_text("sqlite dummy")
-    
-    wizard = ImportWizard()
-    wizard.source_path = str(db_file)
-    
-    config_page = wizard.page_config
-    config_page.initializePage()
-    
-    items = [config_page.list_tables.item(i).text() for i in range(config_page.list_tables.count())]
-    all_text = "\n".join(items)
-    
-    assert "Unsupported file format" in all_text
-    assert ".parquet" in all_text
-    
-    wizard.close()
+    assert len(progress_updates) >= 4
+    assert 100 in progress_updates
+    assert len(finished_results) == 1
+    assert finished_results[0][0] is True
+    assert (base_dir / "base_v1.parquet").exists()

@@ -1,6 +1,19 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
 # Copyright (C) 2026 Noxfort Systems
 #
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
 # File: tests/unit/test_physics_engine.py
 # Author: Gabriel Moraes
 # Date: 2026-08-17
@@ -27,7 +40,7 @@ from src.physics.continuum import (
 from src.physics.traffic_loss import TrafficPhysicsLoss
 from src.infrastructure.safetensors_repository import SafetensorsRepository
 from src.strategies.semantic_clustering import CosineSemanticClusterer
-from src.models.pinn_traffic_flow import PINNTrafficFlow
+from src.models.pino_traffic import PINOTrafficFlow1D
 from src.models.pi_vae_tcn import PIVAETCN
 from src.models.wavelet_ae_occ import WaveletAEOCC
 from src.models.neuro_symbolic import NeuroSymbolicModel
@@ -182,9 +195,9 @@ class TestSafetensorsAndClustering:
 
 
 class TestModelsRefactoredPINN:
-    def test_pinn_traffic_flow_with_custom_diagram(self):
+    def test_pino_traffic_flow_with_custom_diagram(self):
         custom_diagram = UnderwoodDiagram()
-        model = PINNTrafficFlow(in_channels=32, fundamental_diagram=custom_diagram)
+        model = PINOTrafficFlow1D(in_channels=32, fundamental_diagram=custom_diagram)
         x = torch.randn(2, 5, 32)
         edge_index = torch.tensor([[0, 1], [1, 2]])
         

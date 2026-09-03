@@ -120,12 +120,14 @@ class SemanticStrategies:
                 'learning_rate': lr
             }
             timesnet_config = {
+                'enc_in': 1,
                 'seq_len': 96,
                 'pred_len': 96,
                 'e_layers': e_layers,
                 'd_model': d_model,
                 'd_ff': d_model * 4,
-                'top_k': top_k
+                'top_k': top_k,
+                'learning_rate': lr
             }
             
             agent = PeakClassifierAgent(

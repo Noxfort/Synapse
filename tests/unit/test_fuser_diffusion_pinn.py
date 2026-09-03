@@ -1,14 +1,29 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
 # Copyright (C) 2026 Noxfort Systems
 #
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
 # File: tests/unit/test_fuser_diffusion_pinn.py
+# Author: Gabriel Moraes
+# Date: 2026-08-31
 
 import pytest
 import torch
 import numpy as np
 
 from src.models.diffusion_gatv2 import DiffusionGATv2, DiffusionGraphConv
-from src.models.pinn_traffic_flow import PINNTrafficFlow
+from src.models.pino_traffic import PINOTrafficFlow1D
 from src.agents.fuser_agent import FuserAgent
 
 
@@ -49,12 +64,12 @@ def test_diffusion_gatv2_single_sensor_extrapolation():
     assert (diffused_norm > 0).all(), "Unobserved nodes should have non-zero extrapolated features."
 
 
-def test_pinn_traffic_flow_consistency():
-    """Test PINNTrafficFlow computes valid density, speed, flow and continuity residuals."""
+def test_pino_traffic_flow_consistency():
+    """Test PINOTrafficFlow1D computes valid density, speed, flow and continuity residuals."""
     num_nodes = 4
     in_dim = 32
     
-    pinn = PINNTrafficFlow(in_channels=in_dim, hidden_dim=32)
+    pinn = PINOTrafficFlow1D(in_channels=in_dim, hidden_dim=32)
     
     x = torch.randn((1, num_nodes, in_dim))
     edge_index = torch.tensor([[0, 1, 2], [1, 2, 3]], dtype=torch.long)

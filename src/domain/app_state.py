@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -16,113 +16,29 @@
 #
 # File: src/domain/app_state.py
 # Author: Gabriel Moraes
-# Date: 2025-12-25
+# Date: 2026-08-28
 
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
+
 from src.domain.entities import MapNode, MapEdge, DataSource
-from src.domain.source_repository import SourceRepository
+from src.domain.topology_repository import TopologyRepository
+from src.managers.interaction_manager import InteractionManager
+from src.interfaces.topology import ITopologyRepository
+from src.interfaces.interaction import IInteractionManager
 
-# --- SUB-MANAGERS (Internal Composition for SRP) ---
-
-class TopologyRepository(QObject):
-    """
-    Responsibility: Manage Static Map Data (The 'World').
-    """
-    map_loaded = pyqtSignal()
-
-    def __init__(self):
-        super().__init__()
-        self._nodes: Dict[str, MapNode] = {}
-        self._edges: Dict[str, MapEdge] = {}
-        self._map_file_path: Optional[str] = None
-
-    def load_data(self, nodes_data: List[dict], edges_data: List[dict]):
-        self._nodes.clear()
-        self._edges.clear()
-        
-        # Hydrate MapNode entities
-        for n_data in nodes_data:
-            node = MapNode(
-                id=n_data['id'], 
-                x=n_data['x'], 
-                y=n_data['y'], 
-                node_type=n_data['type'],
-                real_name=n_data.get('name'),
-                tl_logic_id=n_data.get('tl_logic_id')
-            )
-            self._nodes[n_data['id']] = node
-
-        # Hydrate MapEdge entities
-        for e_data in edges_data:
-            src = e_data.get('from_node')
-            dst = e_data.get('to_node')
-            if not src or not dst:
-                src = e_data.get('from', "N/A")
-                dst = e_data.get('to', "N/A")
-
-            edge = MapEdge(
-                id=e_data['id'], 
-                from_node=src, 
-                to_node=dst, 
-                shape=e_data['shape'],
-                real_name=e_data.get('name') 
-            )
-            self._edges[e_data['id']] = edge
-        
-        self.map_loaded.emit()
-
-    def get_all_nodes(self) -> List[MapNode]:
-        return list(self._nodes.values())
-    
-    def get_all_edges(self) -> List[MapEdge]:
-        return list(self._edges.values())
-
-    def get_node(self, node_id: str) -> Optional[MapNode]:
-        return self._nodes.get(node_id)
-
-    def get_edge(self, edge_id: str) -> Optional[MapEdge]:
-        return self._edges.get(edge_id)
-
-class InteractionManager(QObject):
-    """
-    Responsibility: Manage UI State (Modes, Selections).
-    """
-    mode_changed = pyqtSignal(bool)
-
-    def __init__(self):
-        super().__init__()
-        self._is_association_mode_active: bool = False
-        self._selected_source_id: Optional[str] = None
-
-    def enter_association_mode(self, source_id: str):
-        self._is_association_mode_active = True
-        self._selected_source_id = source_id
-        self.mode_changed.emit(True)
-
-    def exit_association_mode(self):
-        self._is_association_mode_active = False
-        self._selected_source_id = None
-        self.mode_changed.emit(False)
-    
-    @property
-    def is_active(self) -> bool:
-        return self._is_association_mode_active
-    
-    @property
-    def selected_id(self) -> Optional[str]:
-        return self._selected_source_id
-
-
-# --- MAIN APP STATE (FACADE) ---
 
 class AppState(QObject):
     """
-    Central Facade for Application State.
-    Ensures strict Zero Trust initialization.
+    Central Application State Facade / Orchestrator.
+    
+    SOLID Architecture:
+    - [SRP] Coordinates sub-domain managers (Topology, Sources, UI Interaction) and central Qt signals.
+    - [DIP] Injected with abstract protocols (ITopologyRepository, ISourceRepository/Manager, IInteractionManager).
+    - [Encapsulation] Interacts with sub-managers through their public interface.
     """
     
-    # Re-exposing Signals
+    # Re-exposing Signals for application-wide reactivity
     map_data_loaded = pyqtSignal()
     association_mode_changed = pyqtSignal(bool)
     data_association_changed = pyqtSignal(str, str)
@@ -130,36 +46,86 @@ class AppState(QObject):
     data_source_removed = pyqtSignal(str)
     source_origin_toggled = pyqtSignal(str, bool)
 
-    def __init__(self):
+    def __init__(
+        self,
+        topology: Optional[ITopologyRepository] = None,
+        sources: Optional[Any] = None,
+        interaction: Optional[IInteractionManager] = None,
+    ):
         super().__init__()
         
-        # Instantiate Sub-Managers
-        self.topology = TopologyRepository()
-        self.sources = SourceRepository()
-        self.interaction = InteractionManager()
+        # 1. Dependency Inversion Resolution with Sensible Defaults
+        self.topology: ITopologyRepository = topology if topology is not None else TopologyRepository()
         
+        if sources is not None:
+            self.sources = sources
+        else:
+            # Lazy import to prevent circular or premature domain-to-manager dependencies
+            from src.managers.source_manager import SourceManager
+            self.sources = SourceManager()
+
+        self.interaction: IInteractionManager = interaction if interaction is not None else InteractionManager()
+        
+        # Restore persisted map path from source repository if available
+        if hasattr(self.sources, "get_map_path"):
+            restored_map = self.sources.get_map_path()
+            if restored_map:
+                if hasattr(self.topology, "set_map_file_path"):
+                    self.topology.set_map_file_path(restored_map)
+                else:
+                    self.topology._map_file_path = restored_map
+
         # Synchronization Flags
         self.is_meh_ready = False
         
-        # Wire Signals
-        self.topology.map_loaded.connect(self.map_data_loaded)
-        self.sources.source_added.connect(self.data_source_added)
-        self.sources.source_removed.connect(self.data_source_removed)
-        self.sources.association_changed.connect(self.data_association_changed)
-        self.sources.source_origin_toggled.connect(self.source_origin_toggled)
-        self.interaction.mode_changed.connect(self.association_mode_changed)
+        # 2. Wire Signals
+        self._wire_signals()
 
-    # --- DELEGATION METHODS ---
+    def _wire_signals(self) -> None:
+        """Connects child events to central AppState signals."""
+        if hasattr(self.topology, "map_loaded"):
+            self.topology.map_loaded.connect(self.map_data_loaded)
+        if hasattr(self.sources, "source_added"):
+            self.sources.source_added.connect(self.data_source_added)
+        if hasattr(self.sources, "source_removed"):
+            self.sources.source_removed.connect(self.data_source_removed)
+        if hasattr(self.sources, "association_changed"):
+            self.sources.association_changed.connect(self.data_association_changed)
+        if hasattr(self.sources, "source_origin_toggled"):
+            self.sources.source_origin_toggled.connect(self.source_origin_toggled)
+        if hasattr(self.interaction, "mode_changed"):
+            self.interaction.mode_changed.connect(self.association_mode_changed)
+
+    # =========================================================================
+    # TOPOLOGY DELEGATION METHODS
+    # =========================================================================
 
     @pyqtSlot(list, list)
     def set_map_data(self, nodes_data: List[dict], edges_data: List[dict]):
         self.topology.load_data(nodes_data, edges_data)
 
     def set_map_source_path(self, path: str):
-        self.topology._map_file_path = path
+        if hasattr(self.topology, "set_map_file_path"):
+            self.topology.set_map_file_path(path)
+        else:
+            self.topology._map_file_path = path
+
+        if hasattr(self.sources, "set_map_path"):
+            self.sources.set_map_path(path)
 
     def get_map_source_path(self) -> Optional[str]:
-        return self.topology._map_file_path
+        if hasattr(self.topology, "get_map_file_path"):
+            return self.topology.get_map_file_path()
+        return getattr(self.topology, "_map_file_path", None)
+
+    def clear(self):
+        """Resets topology, data sources, and interaction states."""
+        if hasattr(self.topology, "clear"):
+            self.topology.clear()
+        if hasattr(self.sources, "clear"):
+            self.sources.clear()
+        if hasattr(self.interaction, "exit_association_mode"):
+            self.interaction.exit_association_mode()
 
     def get_all_nodes(self) -> List[MapNode]:
         return self.topology.get_all_nodes()
@@ -173,64 +139,100 @@ class AppState(QObject):
     def get_edge(self, edge_id: str) -> Optional[MapEdge]:
         return self.topology.get_edge(edge_id)
 
-    # --- Source Delegation ---
+    # =========================================================================
+    # SOURCE DELEGATION METHODS
+    # =========================================================================
     
     def add_data_source(self, source: DataSource):
-        self.sources.add(source)
+        if hasattr(self.sources, "add"):
+            self.sources.add(source)
 
     def emit_restored_sources(self):
         """Emit source_added for all pre-loaded sources (call AFTER UI signal wiring)."""
-        self.sources.emit_restored_sources()
+        if hasattr(self.sources, "emit_restored_sources"):
+            self.sources.emit_restored_sources()
 
     def remove_data_source(self, source_id: str):
-        self.sources.remove(source_id)
+        if hasattr(self.sources, "remove"):
+            self.sources.remove(source_id)
 
     def get_data_source(self, source_id: str) -> Optional[DataSource]:
-        return self.sources.get(source_id)
+        if hasattr(self.sources, "get"):
+            return self.sources.get(source_id)
+        return None
     
     def get_all_data_sources(self) -> List[DataSource]:
-        return self.sources.get_all()
+        if hasattr(self.sources, "get_all"):
+            return self.sources.get_all()
+        return []
     
     def get_source_by_device_id(self, device_id: str) -> Optional[DataSource]:
-        return self.sources.get(device_id)
+        if hasattr(self.sources, "get"):
+            return self.sources.get(device_id)
+        return None
+
+    def get_next_source_id(self) -> str:
+        """Returns the next unique monotonic source ID."""
+        if hasattr(self.sources, "get_next_source_id"):
+            return self.sources.get_next_source_id()
+        return "src_1"
 
     def register_source(self, source: DataSource):
-        self.sources.add(source)
+        self.add_data_source(source)
     
     def update_source_value(self, source_id: str, value: float):
-        self.sources.update_value(source_id, value)
+        if hasattr(self.sources, "update_value"):
+            self.sources.update_value(source_id, value)
+
+    def notify_source_updated(self, source: DataSource):
+        """Notifies and persists updates to a data source."""
+        if hasattr(self.sources, "notify_source_updated"):
+            self.sources.notify_source_updated(source)
 
     def toggle_source_origin(self, source_id: str):
         """Toggle source between Local and Global scope."""
-        self.sources.toggle_origin(source_id)
+        if hasattr(self.sources, "toggle_origin"):
+            self.sources.toggle_origin(source_id)
 
-    # --- Interaction & Association Delegation ---
+    # =========================================================================
+    # INTERACTION & ASSOCIATION DELEGATION
+    # =========================================================================
 
     @pyqtSlot(str)
     def enter_association_mode(self, source_id: str):
-        self.interaction.enter_association_mode(source_id)
+        if hasattr(self.interaction, "enter_association_mode"):
+            self.interaction.enter_association_mode(source_id)
         
     @pyqtSlot()
     def exit_association_mode(self):
-        self.interaction.exit_association_mode()
+        if hasattr(self.interaction, "exit_association_mode"):
+            self.interaction.exit_association_mode()
 
     def is_in_association_mode(self) -> bool:
-        return self.interaction.is_active
+        if hasattr(self.interaction, "is_active"):
+            return self.interaction.is_active
+        return False
     
     @pyqtSlot(str)
     def associate_selected_source_to_element(self, element_id: str):
-        if not self.interaction.is_active or not self.interaction.selected_id:
+        if not self.is_in_association_mode() or not self.interaction.selected_id:
             return
             
         source_id = self.interaction.selected_id
-        self.sources.associate(source_id, element_id)
-        self.interaction.exit_association_mode()
+        if hasattr(self.sources, "associate"):
+            self.sources.associate(source_id, element_id)
+        self.exit_association_mode()
 
     def get_sources_associated_with_element(self, element_id: str) -> List[str]:
-        return self.sources.get_associations(element_id)
+        if hasattr(self.sources, "get_associations"):
+            return self.sources.get_associations(element_id)
+        return []
 
     def get_element_for_source(self, source_id: str) -> Optional[str]:
-        for element_id, sources in self.sources._associations.items():
-            if source_id in sources:
-                return element_id
+        if hasattr(self.sources, "get_element_for_source"):
+            return self.sources.get_element_for_source(source_id)
         return None
+
+
+# Backward-compatibility re-exports
+__all__ = ["AppState", "TopologyRepository", "InteractionManager"]

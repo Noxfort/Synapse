@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -79,8 +79,11 @@ class MapEdge:
     shape: List[Tuple[float, float]] # List of (x, y) points defining the geometry
     real_name: Optional[str] = None
     
-    # Cost/Distance for Graph Algorithms
+    # Cost/Distance for Graph Algorithms (meters)
     weight: float = 1.0
+    length: float = 100.0
+    max_speed: float = 13.89 # ~50 km/h in m/s
+    lanes: int = 1
     
     # NTCIP Signal Group (Phase) controlling this edge.
     signal_group_id: int = -1 
@@ -145,3 +148,7 @@ class DataAssociation:
     """
     source_id: str
     element_id: str
+
+
+# Forward export for NodeState
+from src.node.node_state import NodeState

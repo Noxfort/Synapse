@@ -20,7 +20,7 @@
 
 import torch
 import torch.nn as nn
-from src.physics.physics_interfaces import IFundamentalDiagram
+from src.interfaces.physics import IFundamentalDiagram
 
 
 class GreenshieldsDiagram(nn.Module):

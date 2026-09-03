@@ -1,7 +1,22 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
 # Copyright (C) 2026 Noxfort Systems
 #
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
 # File: tests/unit/test_fuser_solid.py
+# Author: Gabriel Moraes
+# Date: 2026-08-31
 
 import pytest
 import torch
@@ -10,10 +25,11 @@ import numpy as np
 from unittest.mock import MagicMock
 
 from src.agents.fuser_agent import FuserAgent
-from src.domain.interfaces import ISensorCalibrator, IFusionPipeline
+from src.interfaces.providers import ISensorCalibrator
+from src.interfaces.pipelines import IFusionPipeline
 from src.services.dynamic_sensor_calibrator import DynamicSensorCalibrator
-from src.services.fusion_pipeline import FusionPipeline
-from src.services.fuser_trainer import FuserTrainer
+from src.pipeline.fusion_pipeline import FusionPipeline
+from src.trainer.fuser_trainer import FuserTrainer
 from src.factories.fuser_model_factory import FuserModelFactory
 
 

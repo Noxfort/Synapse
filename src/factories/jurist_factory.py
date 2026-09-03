@@ -21,6 +21,7 @@
 from typing import Dict, Any, Optional
 
 from src.agents.jurist_agent import JuristAgent
+from src.utils.model_paths import get_qwen_gguf_path
 
 
 class JuristFactory:
@@ -37,5 +38,5 @@ class JuristFactory:
         **kwargs: Any
     ) -> JuristAgent:
         cfg = (config or {}).get('jurist', {})
-        model_id = kwargs.get('model_id', cfg.get('model_id'))
+        model_id = kwargs.get('model_id', cfg.get('model_id', get_qwen_gguf_path()))
         return JuristAgent(model_id=model_id)

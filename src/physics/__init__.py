@@ -16,40 +16,4 @@
 #
 # File: src/physics/__init__.py
 # Author: Gabriel Moraes
-# Date: 2026-08-17
-
-from src.physics.physics_interfaces import (
-    IFundamentalDiagram,
-    IPhysicsConstraint,
-    IPhysicsLossEngine,
-)
-from src.physics.fundamental_diagrams import (
-    GreenshieldsDiagram,
-    UnderwoodDiagram,
-    NewellDaganzoDiagram,
-)
-from src.physics.kinematics import (
-    NonNegativityBoundsConstraint,
-    KinematicAccelerationConstraint,
-    TemporalSmoothnessConstraint,
-)
-from src.physics.continuum import (
-    ContinuumConservation,
-    SpatialGraphConservation,
-)
-from src.physics.traffic_loss import TrafficPhysicsLoss
-
-__all__ = [
-    "IFundamentalDiagram",
-    "IPhysicsConstraint",
-    "IPhysicsLossEngine",
-    "GreenshieldsDiagram",
-    "UnderwoodDiagram",
-    "NewellDaganzoDiagram",
-    "NonNegativityBoundsConstraint",
-    "KinematicAccelerationConstraint",
-    "TemporalSmoothnessConstraint",
-    "ContinuumConservation",
-    "SpatialGraphConservation",
-    "TrafficPhysicsLoss",
-]
+# Date: 2026-08-29

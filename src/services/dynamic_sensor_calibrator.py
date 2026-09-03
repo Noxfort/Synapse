@@ -21,7 +21,7 @@
 import numpy as np
 import torch
 from typing import Optional, Any
-from src.domain.interfaces import ISensorCalibrator
+from src.interfaces.providers import ISensorCalibrator
 
 
 class DynamicSensorCalibrator(ISensorCalibrator):

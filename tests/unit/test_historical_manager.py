@@ -1,3 +1,23 @@
+# SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
+# Copyright (C) 2026 Noxfort Systems
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# File: tests/unit/test_historical_manager.py
+# Author: Gabriel Moraes
+# Date: 2026-08-29
+
 import pytest
 from unittest.mock import MagicMock
 from src.services.historical_manager import HistoricalManager
@@ -5,11 +25,16 @@ from src.services.historical_manager import HistoricalManager
 def test_historical_manager_edge_mapping():
     """Test HistoricalManager maps flat data to edges appropriately."""
     mock_app_state = MagicMock()
-    # Mocking that there are 2 edges in the graph, with valid 'id' attributes
     edge_1 = MagicMock()
     edge_1.id = "edge_1"
+    edge_1.max_speed = 13.89
+    edge_1.length = 100.0
+    edge_1.lanes = 1
     edge_2 = MagicMock()
     edge_2.id = "edge_2"
+    edge_2.max_speed = 13.89
+    edge_2.length = 100.0
+    edge_2.lanes = 1
     mock_app_state.get_all_edges.return_value = [edge_1, edge_2]
     
     manager = HistoricalManager(app_state=mock_app_state)

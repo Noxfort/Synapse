@@ -21,8 +21,8 @@
 from typing import Dict, Any, Optional
 
 from src.agents.auditor_agent import AuditorAgent
-from src.services.auditor_pipeline import AuditorPipeline
-from src.services.auditor_trainer import AuditorTrainer
+from src.pipeline.auditor_pipeline import AuditorPipeline
+from src.trainer.auditor_trainer import AuditorTrainer
 
 
 class AuditorFactory:

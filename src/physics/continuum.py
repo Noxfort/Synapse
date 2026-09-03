@@ -22,7 +22,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from src.physics.physics_interfaces import IPhysicsConstraint
+from src.interfaces.physics import IPhysicsConstraint
 
 
 class ContinuumConservation(nn.Module):
@@ -113,3 +113,11 @@ class SpatialGraphConservation(nn.Module):
         
         loss = res_conservation.mean()
         return self.penalty_scale * loss
+
+    def compute_loss(self, flow: torch.Tensor, edge_index: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
+        """Alias for compute_residual."""
+        return self.compute_residual(flow, edge_index, **kwargs)
+
+    def forward(self, flow: torch.Tensor, edge_index: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
+        """Forward pass delegates to compute_residual."""
+        return self.compute_residual(flow, edge_index, **kwargs)

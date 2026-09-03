@@ -1,3 +1,23 @@
+# SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
+# Copyright (C) 2026 Noxfort Systems
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# File: tests/integration/test_latency_benchmark.py
+# Author: Gabriel Moraes
+# Date: 2026-08-29
+
 import pytest
 import time
 from unittest.mock import MagicMock
@@ -24,16 +44,12 @@ def test_inference_pipeline_latency_benchmark(mock_app_state):
     
     mock_xai = MagicMock()
     
-    # 2. Instantiate Engine 
-    # (This will trigger NeuralFactory and load the real neural models if available)
+    # 2. Instantiate Engine via EngineComponentFactory (DIP)
     try:
-        engine = InferenceEngine(
-            app_state=mock_app_state,
-            ingestion=mock_ingestion,
-            graph_manager=mock_graph,
-            historical_manager=mock_historical,
-            xai_manager=mock_xai
-        )
+        from src.factories.engine_component_factory import EngineComponentFactory
+        components = EngineComponentFactory(mock_app_state).build()
+        engine = components.inference_engine
+        engine.graph_manager.nodes = {"dummy_sensor": DummyNode()}
     except Exception as e:
         pytest.skip(f"Could not load InferenceEngine (missing models?): {e}")
 

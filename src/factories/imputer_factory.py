@@ -21,8 +21,8 @@
 from typing import Dict, Any, Optional
 
 from src.agents.imputer_agent import ImputerAgent
-from src.services.imputer_pipeline import ImputerPipeline
-from src.services.imputer_trainer import ImputerTrainer
+from src.pipeline.imputer_pipeline import ImputerPipeline
+from src.trainer.imputer_trainer import ImputerTrainer
 
 
 class ImputerFactory:

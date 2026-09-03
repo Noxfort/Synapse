@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -21,12 +21,15 @@
 import torch
 import queue
 import time
-import traceback
 from PyQt6.QtCore import QThread, pyqtSignal
 
 # Import the specific Agents
 from src.agents.auditor_agent import AuditorAgent
 from src.agents.linguist_agent import LinguistAgent
+from src.utils.logging_setup import get_logger
+
+logger = get_logger("AsyncWorkers")
+
 
 class AuditorWorker(QThread):
     """
@@ -51,11 +54,11 @@ class AuditorWorker(QThread):
         self.data_queue.put(state_vector)
 
     def run(self):
-        print("[AuditorWorker] Thread Started.")
+        logger.info("AuditorWorker thread started.")
         try:
             self.agent = AuditorAgent(input_dim=self.input_dim)
         except Exception as e:
-            print(f"[AuditorWorker] Init Error: {e}")
+            logger.error(f"AuditorWorker init error: {e}", exc_info=True)
             return
         
         while self.is_running:
@@ -73,8 +76,7 @@ class AuditorWorker(QThread):
             except queue.Empty:
                 continue
             except Exception as e:
-                print(f"[AuditorWorker] Runtime Error: {e}")
-                traceback.print_exc()
+                logger.error(f"AuditorWorker runtime error: {e}", exc_info=True)
 
     def stop(self):
         self.is_running = False
@@ -101,15 +103,14 @@ class LinguistWorker(QThread):
         self.data_queue.put((header_name, data_sample))
 
     def run(self):
-        print("[LinguistWorker] Thread Started (Loading Transformers...).")
+        logger.info("LinguistWorker thread started (Loading Transformers...).")
         
         try:
             # Initialize the heavy Linguist Agent (DistilRoBERTa)
             self.agent = LinguistAgent()
-            print("[LinguistWorker] Neuro-Symbolic Brain Ready.")
+            logger.info("LinguistWorker: Neuro-Symbolic Brain Ready.")
         except Exception as e:
-            print(f"[LinguistWorker] CRITICAL: Failed to load AI models. {e}")
-            traceback.print_exc()
+            logger.critical(f"LinguistWorker: Failed to load AI models: {e}", exc_info=True)
             return
         
         while self.is_running:
@@ -126,10 +127,7 @@ class LinguistWorker(QThread):
                 if hasattr(self.agent, 'physical_brain') and hasattr(self.agent.physical_brain, 'input_len'):
                     required_samples = self.agent.physical_brain.input_len
 
-                print(f"[LinguistWorker] 📥 Received task for '{header_name}'.")
-                print(f"[LinguistWorker] 🧪 Neuro-Symbolic Sampler: {current_samples}/{required_samples}")
-                
-                print(f"[LinguistWorker] 🧠 Analyzing...")
+                logger.debug(f"LinguistWorker task for '{header_name}' (Sampler: {current_samples}/{required_samples})")
 
                 # --- Perform Analysis ---
                 try:
@@ -161,15 +159,13 @@ class LinguistWorker(QThread):
                     if current_samples < required_samples:
                         phys_msg = "Physical Brain Skipped (Insuff. Data)"
 
-                    print(f"[LinguistWorker] 🏁 Finished in {duration:.2f}s.")
-                    print(f"[LinguistWorker] 🔎 Verdict: {understanding_status} | Type: {inf_type} (Conf: {conf:.2f}) | {phys_msg}")
+                    logger.info(f"Linguist [{clean_name}] -> {understanding_status} | Type: {inf_type} ({conf*100:.1f}%) | {phys_msg} in {duration:.2f}s")
 
                     # Emit Result
                     self.analysis_finished.emit(clean_name, inf_type, conf)
 
                 except Exception as e:
-                    print(f"[LinguistWorker] ⚠️ Analysis Failed: {e}")
-                    traceback.print_exc()
+                    logger.error(f"Linguist analysis failed for '{header_name}': {e}", exc_info=True)
                     # Emit failure
                     self.analysis_finished.emit(str(header_name), "error", 0.0)
                 
@@ -178,7 +174,7 @@ class LinguistWorker(QThread):
             except queue.Empty:
                 continue
             except Exception as e:
-                print(f"[LinguistWorker] System Error: {e}")
+                logger.error(f"LinguistWorker system error: {e}", exc_info=True)
 
     def stop(self):
         self.is_running = False

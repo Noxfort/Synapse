@@ -88,13 +88,20 @@ class SanitizationStage(BaseStage):
 
         df_golden = df_raw.copy()
         
+        # Ensure targeted numeric columns are float64 so they can receive continuous float corrections and imputations
+        for col in available_cols:
+            df_golden[col] = pd.to_numeric(df_golden[col], errors='coerce').astype(np.float64)
+        
         # Safety net for missing grouping key
         if 'sensor_id' not in df_raw.columns:
             self.log("[SanitizationStage] ⚠️ No 'sensor_id' found! Processing entire dataset as one continuous block.")
             df_golden['sensor_id'] = 'default_sensor'
 
-        self.log(f"[SanitizationStage] 🧹 Running VAE-TCN and PatchTST grouped by sensor_id...")
-        
+        self.log(f"[SanitizationStage] 🧹 Initializing VAE-TCN and PatchTST agents for {len(available_cols)} features...")
+        num_features = len(available_cols)
+        corrector_agent = CorrectorAgent(input_dim=num_features)
+        imputer_agent = ImputerAgent(feature_dim=num_features, seq_len=24)
+
         groups = df_golden.groupby('sensor_id')
         total_gaps = 0
 
@@ -106,7 +113,7 @@ class SanitizationStage(BaseStage):
             data_matrix = group_df[available_cols].values.astype(np.float32)
             
             # Step 1: Correction (VAE-TCN) - Injects NaNs on outliers
-            processed_matrix = self._apply_corrector(data_matrix)
+            processed_matrix = self._apply_corrector(data_matrix, corrector_agent)
             
             # Step 2: Imputation (PatchTST) - Fills NaNs using temporal context
             nan_count = np.isnan(processed_matrix).sum()
@@ -114,7 +121,7 @@ class SanitizationStage(BaseStage):
             
             if nan_count > 0:
                 self.log(f"[SanitizationStage] 🧬 Sensor '{sensor}': Found {nan_count} gaps/outliers. Imputing...")
-                processed_matrix = self._apply_imputer(processed_matrix)
+                processed_matrix = self._apply_imputer(processed_matrix, imputer_agent)
                 
             # Safely restore the processed window back into the main DataFrame
             df_golden.loc[group_df.index, available_cols] = processed_matrix
@@ -157,12 +164,9 @@ class SanitizationStage(BaseStage):
             
         return max(candidates, key=os.path.getmtime)
 
-    def _apply_corrector(self, data: np.ndarray) -> np.ndarray:
+    def _apply_corrector(self, data: np.ndarray, agent: CorrectorAgent) -> np.ndarray:
         """Uses CorrectorAgent to smooth data and inject NaNs on anomalies."""
         import warnings
-        features = data.shape[1]
-        agent = CorrectorAgent(input_dim=features)
-        
         corrected = agent.inference(data)
         
         deviation = np.abs(data - corrected)
@@ -179,14 +183,13 @@ class SanitizationStage(BaseStage):
         
         return output
 
-    def _apply_imputer(self, data: np.ndarray) -> np.ndarray:
+    def _apply_imputer(self, data: np.ndarray, agent: ImputerAgent) -> np.ndarray:
         """Uses ImputerAgent to fill NaNs created by the Corrector."""
-        features = data.shape[1]
-        agent = ImputerAgent(feature_dim=features, seq_len=24)
         return agent.impute(data)
 
     def _enrich_time_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Extracts standard temporal markers needed for downstream analysis."""
+        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
         df['hour'] = df['timestamp'].dt.hour
         df['day_of_week'] = df['timestamp'].dt.dayofweek
         return df

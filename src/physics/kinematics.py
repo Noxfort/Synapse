@@ -21,7 +21,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from src.physics.physics_interfaces import IPhysicsConstraint
+from src.interfaces.physics import IPhysicsConstraint
 
 
 class NonNegativityBoundsConstraint(nn.Module):

@@ -17,11 +17,6 @@
 # File: src/afb/strategies.py
 # Author: Gabriel Moraes
 # Date: 2026-03-09
-#
-# Refactored V2 (2026-03-09): SOLID Compliance
-# - OCP: Each strategy is a class implementing FusionStrategy Protocol.
-# - ISP: Returns typed FusionResult instead of Dict[str, Any].
-# - DIP: Engine depends on Protocol, not concrete classes.
 
 """
 AFB Fusion Strategies — Pure Math, Zero Dependencies.

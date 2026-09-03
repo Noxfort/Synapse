@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -116,6 +116,16 @@ class TemporalMemory:
     def clear(self):
         """Resets the memory."""
         self.buffer.clear()
+
+    def get_state(self) -> List[List[float]]:
+        """Returns the raw buffer contents for checkpointing."""
+        return [list(x) for x in self.buffer]
+
+    def set_state(self, state: List[List[float]]):
+        """Restores buffer contents from a checkpoint."""
+        self.clear()
+        for item in state:
+            self.push(item)
 
     def __len__(self):
         return len(self.buffer)

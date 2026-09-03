@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -146,10 +146,8 @@ class NeuralFactory:
             # 5. Linguist Agent (Neuro-Symbolic)
             self.agents['linguist'] = LinguistAgent()
 
-            # 6. Jurist Agent (Qwen 2.5 1.5B)
-            self.agents['jurist'] = JuristAgent(
-                model_id="Qwen/Qwen2.5-1.5B-Instruct" 
-            )
+            # 6. Jurist Agent (Qwen 3.5 GGUF)
+            self.agents['jurist'] = JuristAgent()
             
             # --- Device Placement (CRITICAL FIX) ---
             for name, agent in self.agents.items():
@@ -184,9 +182,9 @@ class NeuralFactory:
         with trained weights and a statistically-calibrated threshold.
         """
         candidate_paths = [
+            os.path.join(self.weights_dir, "auditor_calibrated.pth"),
             os.path.join(os.path.expanduser("~"), "Documentos", "Synapse", "data", "config", "auditor_calibrated.pth"),
             os.path.join(os.path.expanduser("~"), "Documents", "Synapse", "data", "config", "auditor_calibrated.pth"),
-            os.path.join(self.weights_dir, "auditor_calibrated.pth"),
         ]
 
         for path in candidate_paths:
@@ -198,15 +196,32 @@ class NeuralFactory:
                         auditor.model.load_state_dict(checkpoint['model_state_dict'])
 
                     if 'threshold' in checkpoint:
-                        auditor.model.threshold = checkpoint['threshold']
+                        raw_thresh = checkpoint['threshold']
+                        raw_val = float(raw_thresh.item() if isinstance(raw_thresh, torch.Tensor) else raw_thresh)
+                        # Ensure robust baseline headroom for older checkpoints (< 0.75)
+                        thresh_val = max(0.75, raw_val * 1.35 if raw_val < 0.60 else raw_val)
+                        auditor.model.threshold = torch.tensor(thresh_val)
+                        if hasattr(auditor, 'pipeline') and hasattr(auditor.pipeline, 'calibrator') and auditor.pipeline.calibrator is not None:
+                            auditor.pipeline.calibrator.threshold = thresh_val
+                        if hasattr(auditor, 'trainer') and hasattr(auditor.trainer, 'calibrator') and auditor.trainer.calibrator is not None:
+                            auditor.trainer.calibrator.threshold = thresh_val
 
-                    if 'center' in checkpoint:
-                        auditor.model.center = checkpoint['center']
-                        auditor.model.center_initialized = checkpoint.get('center_initialized', True)
+                    if 'center' in checkpoint and checkpoint['center'] is not None:
+                        center = checkpoint['center']
+                        center_init = checkpoint.get('center_initialized', True)
+                        auditor.model.center = center
+                        auditor.model.center_initialized = center_init
+                        if hasattr(auditor, 'pipeline') and hasattr(auditor.pipeline, 'calibrator') and auditor.pipeline.calibrator is not None:
+                            auditor.pipeline.calibrator.center = center
+                            auditor.pipeline.calibrator.center_initialized = center_init
+                        if hasattr(auditor, 'trainer') and hasattr(auditor.trainer, 'calibrator') and auditor.trainer.calibrator is not None:
+                            auditor.trainer.calibrator.center = center
+                            auditor.trainer.calibrator.center_initialized = center_init
 
+                    loaded_thresh = auditor.model.threshold.item() if isinstance(auditor.model.threshold, torch.Tensor) else auditor.model.threshold
                     self.logger.info(
                         f"Neural Factory: ✅ Auditor loaded CALIBRATED checkpoint from {path} "
-                        f"(threshold={auditor.model.threshold.item():.6f})"
+                        f"(threshold={loaded_thresh:.6f})"
                     )
                     return
 

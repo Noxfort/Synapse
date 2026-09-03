@@ -17,30 +17,25 @@
 # File: src/afb/afb_engine.py
 # Author: Gabriel Moraes
 # Date: 2026-03-09
-#
-# Refactored V2 (2026-03-09): Full SOLID Compliance
-# - SRP: Engine only orchestrates — strategies own their logic and state.
-# - OCP: New strategies are added via register(), no code modified.
-# - ISP: Returns typed FusionResult, accepts typed SensorReading.
-# - DIP: Depends on FusionStrategy Protocol, not concrete classes.
 
 """
-AFB Engine — Level 2 Safety Fallback Orchestrator.
+AFB Engine — Autonomous Fallback Bridge (Level 2 Safety Fallback).
 
 Activated when the AuditorAgent detects anomalies in FuserAgent output.
-Uses live sensor data + simple math to produce fused estimates.
+Performs historical replay of validated transmissions and provides isolated process fallback.
 
 SOLID Architecture:
     - Strategies are registered at init (OCP: extensible without modification).
     - Engine iterates registered strategies and picks the first that can_handle().
-    - Strategies are ordered by priority (most capable first).
+    - Integrates ReplayEngine for historical transmission replication.
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 from src.afb.models import SensorReading, FusionResult, NO_DATA
 from src.afb.sensor_guard import SensorGuard
+from src.afb.replay_engine import ReplayEngine
 from src.afb.strategies import (
     FusionStrategy,
     TrimmedMeanStrategy,
@@ -53,30 +48,22 @@ logger = logging.getLogger("Synapse.AFB")
 
 class AFBEngine:
     """
-    Algoritmo de Fusão Baseline (AFB) — Level 2 Safety Fallback.
+    Autonomous Fallback Bridge (AFB) — Level 2 Safety Fallback.
     
     SOLID Design:
-        - SRP: Only orchestrates strategy selection. No fusion math here.
+        - SRP: Only orchestrates strategy selection and replay. No heavy fusion math here.
         - OCP: Register new strategies without modifying engine code.
         - DIP: Depends on FusionStrategy Protocol, not concrete classes.
         - ISP: Typed inputs (SensorReading) and outputs (FusionResult).
-    
-    Usage:
-        afb = AFBEngine()
-        result = afb.fuse([
-            SensorReading("cam_01", 25.0, 0.95),
-            SensorReading("radar_01", 23.0, 0.95),
-            SensorReading("waze_api", 30.0, 0.60),
-        ])
-        print(result.value, result.strategy, result.confidence)
     """
 
     # Default trust score when source has no configured score
     DEFAULT_TRUST = 0.5
 
-    def __init__(self, guard: Optional[SensorGuard] = None):
+    def __init__(self, guard: Optional[SensorGuard] = None, data_path: Optional[str] = None):
         # Pre-filter: rejects individual bad readings before fusion
         self._guard = guard or SensorGuard()
+        self._replay_engine = ReplayEngine(data_path=data_path)
         
         # Strategy registry — ordered by priority (most capable first)
         self._strategies: List[FusionStrategy] = []
@@ -178,6 +165,10 @@ class AFBEngine:
             "registered_strategies": [s.name for s in self._strategies],
             "guard": self._guard.get_diagnostics(),
         }
+
+    def get_replay_frame(self, target_timestamp: Optional[float] = None) -> Dict[str, Any]:
+        """Delegates historical transmission frame retrieval to ReplayEngine (SRP)."""
+        return self._replay_engine.get_replay_frame(target_timestamp)
 
     def reset(self) -> None:
         """Clears all internal state across all strategies and guard."""

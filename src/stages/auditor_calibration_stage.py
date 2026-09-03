@@ -51,7 +51,9 @@ class AuditorCalibrationStage(BaseStage):
     SLOPE_THRESHOLD = 1e-4
     BATCH_SIZE = 64
     WINDOW_SIZE = 60  # Matches default seq_len used by NeuralFactory
-    CALIBRATION_PERCENTILE = 95
+    CALIBRATION_PERCENTILE = 99
+    SAFETY_HEADROOM = 1.35
+    MIN_THRESHOLD_FLOOR = 0.75
 
     def execute(self, shared_context: Dict[str, Any]) -> bool:
         """Trains the Auditor on golden data and saves calibrated checkpoint."""
@@ -137,14 +139,15 @@ class AuditorCalibrationStage(BaseStage):
                     break
 
             # 4. Calibrate Threshold
-            self.log("[AuditorCalibrationStage] 📐 Calibrating anomaly threshold (percentile 95)...")
+            self.log("[AuditorCalibrationStage] 📐 Calibrating anomaly threshold (percentile 99 + safety headroom)...")
             self._calibrate_threshold(agent, windows)
 
             # 5. Save Checkpoint
             self._save_checkpoint(agent, checkpoint_path)
 
+            thresh_val = float(agent.model.threshold.item() if isinstance(agent.model.threshold, torch.Tensor) else agent.model.threshold)
             self.log(f"[AuditorCalibrationStage] ✅ Auditor calibrated successfully!")
-            self.log(f"[AuditorCalibrationStage] 📊 Final threshold: {agent.model.threshold.item():.6f}")
+            self.log(f"[AuditorCalibrationStage] 📊 Final threshold: {thresh_val:.6f}")
             self.progress(95)
 
             return True
@@ -168,8 +171,10 @@ class AuditorCalibrationStage(BaseStage):
         if not numeric_cols:
             return None
 
-        # Use all numeric columns, flatten each row into a single feature vector
-        data = df[numeric_cols].values.astype(np.float32)
+        # Clean NaN/Inf in the dataframe
+        df_clean = df[numeric_cols].ffill().bfill().fillna(0.0)
+        data = df_clean.values.astype(np.float32)
+        data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
 
         # If total features per row >= WINDOW_SIZE, use rows directly
         if data.shape[1] >= self.WINDOW_SIZE:
@@ -200,48 +205,94 @@ class AuditorCalibrationStage(BaseStage):
         This replaces the arbitrary 0.5 default with a data-driven cutoff.
         """
         agent.model.eval()
+        device = getattr(agent.pipeline, "device", getattr(agent, "device", torch.device("cpu")))
+        calibrator = getattr(agent.pipeline, "calibrator", getattr(agent.trainer, "calibrator", None))
+        physics_engine = getattr(agent.pipeline, "physics_engine", getattr(agent.trainer, "physics_engine", None))
+        physics_weight = getattr(agent.pipeline, "physics_weight", getattr(agent, "physics_weight", 0.5))
+        enable_pinn = getattr(agent.pipeline, "enable_pinn", getattr(agent, "enable_pinn", True))
+
         all_scores = []
 
         with torch.no_grad():
             for i in range(0, len(windows), self.BATCH_SIZE):
                 batch = torch.tensor(
                     windows[i:i + self.BATCH_SIZE], dtype=torch.float32
-                ).to(agent.device)
+                ).to(device)
 
                 from src.utils.normalization import TensorNormalizer
+                batch = TensorNormalizer.sanitize(batch)
                 batch, _, _ = TensorNormalizer.instance_norm(batch)
-                feats, z, rec_feats, time_recon, physics_res = agent.model(batch, return_physics=True)
+                batch = TensorNormalizer.sanitize(batch)
+
+                feats, z, rec_feats, time_recon = agent.model(batch, return_time_recon=True)
+                feats = feats.to(device)
+                z = z.to(device)
+                rec_feats = rec_feats.to(device)
+                time_recon = time_recon.to(device)
+
                 rec_err = torch.mean((rec_feats - feats) ** 2, dim=1)
                 time_err = torch.mean((time_recon - batch) ** 2, dim=1)
-                dist_center = torch.sum((z - agent.model.center) ** 2, dim=1)
-                phys_val = physics_res["total_physics_loss"] if getattr(agent, "enable_pinn", True) else 0.0
-                scores = rec_err + (0.5 * time_err) + (0.1 * dist_center) + (getattr(agent, "physics_weight", 0.5) * phys_val)
+
+                if calibrator is not None and calibrator.center is not None:
+                    center = calibrator.center.to(device)
+                    dist_center = torch.sum((z - center) ** 2, dim=1)
+                else:
+                    dist_center = torch.zeros(batch.shape[0], device=device)
+
+                if physics_engine is not None and enable_pinn:
+                    physics_res = physics_engine.compute_losses(time_recon, orig_x=batch)
+                    phys_val = physics_res.get("total_physics_loss", torch.tensor(0.0, device=device))
+                    if isinstance(phys_val, torch.Tensor):
+                        phys_val = phys_val.to(device)
+                else:
+                    phys_val = torch.tensor(0.0, device=device)
+
+                scores = rec_err + (0.5 * time_err) + (0.1 * dist_center) + (physics_weight * phys_val)
                 all_scores.append(scores.cpu())
 
-        all_scores = torch.cat(all_scores).numpy()
-        calibrated_threshold = float(np.percentile(all_scores, self.CALIBRATION_PERCENTILE))
+        if all_scores:
+            all_scores = torch.cat(all_scores).numpy()
+            valid_scores = all_scores[np.isfinite(all_scores)]
+            if len(valid_scores) > 0:
+                raw_pct = float(np.percentile(valid_scores, self.CALIBRATION_PERCENTILE))
+                calibrated_threshold = max(self.MIN_THRESHOLD_FLOOR, raw_pct * self.SAFETY_HEADROOM)
+            else:
+                calibrated_threshold = self.MIN_THRESHOLD_FLOOR
+        else:
+            calibrated_threshold = self.MIN_THRESHOLD_FLOOR
 
-        # Override the EMA threshold with the statistical one
+        # Override threshold with the statistical one in calibrator and model
+        if calibrator is not None:
+            calibrator.threshold = calibrated_threshold
         agent.model.threshold = torch.tensor(calibrated_threshold)
+        if hasattr(agent, "threshold"):
+            agent.threshold = torch.tensor(calibrated_threshold)
 
     def _save_checkpoint(self, agent: AuditorAgent, checkpoint_path: str):
         """Saves the full calibrated state using CheckpointService pattern."""
         os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
-        
+
+        calibrator = getattr(agent.pipeline, "calibrator", getattr(agent.trainer, "calibrator", None))
+        center = calibrator.center if (calibrator and calibrator.center is not None) else getattr(agent.model, 'center', None)
+        center_init = calibrator.center_initialized if calibrator else getattr(agent.model, 'center_initialized', False)
+        threshold = calibrator.threshold if calibrator else getattr(agent.model, 'threshold', 0.5)
+        if isinstance(threshold, torch.Tensor):
+            threshold = threshold.item()
+
         state = {
             'model_state_dict': agent.model.state_dict(),
-            'threshold': agent.model.threshold,
-            'center': agent.model.center,
-            'center_initialized': agent.model.center_initialized,
-            'input_len': agent.model.input_len,
-            'latent_dim': agent.model.latent_dim,
+            'threshold': threshold,
+            'center': center,
+            'center_initialized': center_init,
+            'input_len': getattr(agent.model, 'input_len', self.WINDOW_SIZE),
+            'latent_dim': getattr(agent.model, 'latent_dim', 16),
         }
-        
+
         # Atomic save (temp → move)
         temp_path = checkpoint_path + ".tmp"
         torch.save(state, temp_path)
-        
+
         import shutil
         shutil.move(temp_path, checkpoint_path)
-        
+
         self.log(f"[AuditorCalibrationStage] 💾 Checkpoint saved: {checkpoint_path}")

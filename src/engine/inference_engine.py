@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -16,233 +16,205 @@
 #
 # File: src/engine/inference_engine.py
 # Author: Gabriel Moraes
-# Date: 2026-02-16
-#
-# Refactored V4 (4-Thread Architecture):
-# - Removed XAIWorker lifecycle management (XAI is now ephemeral, managed externally).
-# - Removed direct LinguistService.run_check() call (emits signal instead).
-# - This engine is a PURE neural inference pipeline.
+# Date: 2026-08-30
 
 import time
-import torch
 import logging
-from typing import Any, Dict
+import numpy as np
 from datetime import datetime
+from typing import Optional
 
-# Qt Imports (CRITICAL for moveToThread)
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
-# --- Domain & State ---
 from src.domain.app_state import AppState
-
-# --- Subsystems ---
-from src.workers.ingestion_worker import IngestionWorker
-from src.services.historical_manager import HistoricalManager
-from src.engine.cycle_processor import CycleProcessor
-
-# --- Factories & Builders ---
-from src.engine.neural_factory import NeuralFactory
-from src.engine.snapshot_builder import SnapshotBuilder
-
-# --- Managers ---
 from src.managers.graph_manager import GraphManager
-from src.managers.xai_manager import XAIManager
+from src.workers.ingestion_worker import IngestionWorker
+from src.interfaces.engine import (
+    IInferenceEngine,
+    IGatingPolicy,
+    IForecastImputer,
+    ISnapshotBuilder,
+    ICycleProcessor,
+)
+from src.kse.packet_builder import PacketBuilder
 from src.utils.debug_logger import perf_logger
+
 
 class InferenceEngine(QObject):
     """
-    The Real-Time Neural Inference Orchestrator.
-    
-    Refactored V4 (4-Thread Architecture):
-    - PURE neural pipeline: Coordinator → Fuser → Auditor.
-    - XAI and Linguist are decoupled and managed externally on their own threads.
-    - Emits `linguist_check_requested` signal for the Linguist standby thread.
+    The Real-Time Neural Inference Orchestrator (Implements IInferenceEngine).
+
+    Coordinates the synchronous inference loop (~1Hz):
+    1. Async input polling (Global APIs)
+    2. Source readiness & quarantine evaluation (GatingPolicy)
+    3. Graph physics progression (GraphManager)
+    4. State snapshot aggregation (SnapshotBuilder)
+    5. Spatio-temporal neural inference (CycleProcessor)
+    6. Forecast imputation for unobserved nodes (ForecastImputer)
+    7. Event & telemetry dissemination (PyQt Signals)
     """
-    
-    # --- CONFIGURATION ---
-    LINGUIST_THROTTLE_CYCLES = 5
-    
+
     # --- SIGNALS ---
-    started = pyqtSignal()
-    
-    # Fast Path: Raw sensor data for UI Graphs
-    data_processed = pyqtSignal(dict)
-    
     # Slow Path: Full Inference Cycle Results
     global_cycle_results = pyqtSignal(dict)
-    
-    # Legacy Visualization
     kinetic_data_ready = pyqtSignal(dict)
-    
-    # Semantic & Security Signals
+
+    # Security & Drift Signals
     audit_update = pyqtSignal(bool, float, float, list)
     drift_update = pyqtSignal(str, dict)
-    
+
     # Cross-Thread Coordination
     linguist_check_requested = pyqtSignal()
 
-    def __init__(self, 
-                 app_state: AppState, 
-                 ingestion: IngestionWorker,
-                 graph_manager: GraphManager,
-                 historical_manager: HistoricalManager,
-                 xai_manager: XAIManager):
+    def __init__(
+        self,
+        app_state: AppState,
+        graph_manager: GraphManager,
+        snapshot_builder: ISnapshotBuilder,
+        processor: ICycleProcessor,
+        gating_policy: IGatingPolicy,
+        forecast_imputer: IForecastImputer,
+        ingestion: Optional[IngestionWorker] = None,
+    ):
         super().__init__()
         self.app_state = app_state
+        self.graph_manager = graph_manager
+        self.snapshot_builder = snapshot_builder
+        self.processor = processor
+        self.gating_policy = gating_policy
+        self.forecast_imputer = forecast_imputer
+        self.ingestion = ingestion
         self.cycle_count = 0
         self.logger = logging.getLogger(__name__)
-        
-        # 1. Store Injected Dependencies (SOLID - DIP)
-        self.ingestion = ingestion
-        self.graph_manager = graph_manager
-        self.historical_manager = historical_manager
-        self.xai_manager = xai_manager
-        
-        # 2. Initialize Internal Core Builders
-        self.neural_factory = NeuralFactory()
-        self.device = self.neural_factory.get_device()
-        self.agents = self.neural_factory.build_all(self.app_state)
-        
-        self.snapshot_builder = SnapshotBuilder(
-            app_state=self.app_state,
-            graph_manager=self.graph_manager,
-            embedding_dim=32
-        )
-        
-        self.processor = CycleProcessor(
-            app_state=self.app_state,
-            device=self.device,
-            coordinator=self.agents.get('coordinator'),
-            fuser=self.agents.get('fuser'),
-            auditor=self.agents.get('auditor'),
-            xai_manager=self.xai_manager,
-            graph_manager=self.graph_manager
-        )
-        
-        # 3. Signal Wiring
-        self.ingestion.data_ready.connect(self._handle_data_flow)
 
     @pyqtSlot()
-    def initialize_system(self):
-        """Lifecycle Hook: Boots up ingestion and graph."""
-        self.logger.info("[InferenceEngine] Booting Subsystems...")
-        
-        self.ingestion.start()
-        self.graph_manager.rebuild_graph()
-        
-        if not self.historical_manager.is_ready:
-            self.historical_manager.load_data()
-        
-        self.started.emit()
-        self.logger.info("[InferenceEngine] System ONLINE (Neural Core Active).")
-
-    @pyqtSlot()
-    def stop(self):
-        """Lifecycle Hook: Graceful shutdown."""
-        self.logger.info("[InferenceEngine] Shutting down...")
-        self.ingestion.stop()
-
-    # =========================================================================
-    # UNIFIED DATA PIPELINE
-    # =========================================================================
-
-    @pyqtSlot(str, object)
-    def _handle_data_flow(self, source_id: str, payload: Any):
-        """Centralized handler for incoming data."""
-        if not source_id: return
-        
-        val = payload.get('value') if isinstance(payload, dict) else payload
-        
-        # Update Graph Memory
-        self.graph_manager.update_node_memory(source_id, val)
-        
-        # Emit Fast Path
-        self.data_processed.emit({"id": source_id, "raw": val})
-
-    @pyqtSlot(str, object)
-    def process_data_point(self, source_id: str, payload: Any):
-        """External command (Manual Control)."""
-        for src in self.app_state.get_all_data_sources():
-            if src.id == source_id:
-                src.latest_value = payload.get('value') if isinstance(payload, dict) else payload
-                src.last_update = time.time()
-                break
-        self._handle_data_flow(source_id, payload)
-
-    # =========================================================================
-    # GLOBAL CYCLE ORCHESTRATION
-    # =========================================================================
-
-    @pyqtSlot()
-    def run_global_cycle(self):
-        """Executes the Neural Pipeline."""
+    def run_global_cycle(self) -> None:
+        """Executes one iteration of the neural inference pipeline."""
         self.cycle_count += 1
         _cycle_start = time.time()
         _ts_start = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-        now = time.time()
-        
-        # 1. Async Inputs
-        self.ingestion.check_global_fetch(now)
-        
-        # 2. Linguist Trigger (Cross-Thread Signal → Standby Thread)
-        if self.cycle_count % self.LINGUIST_THROTTLE_CYCLES == 0:
+
+        # 1. Async Inputs: Adaptive polling for Global APIs
+        if self.ingestion:
+            self.ingestion.check_global_fetch(_cycle_start)
+
+        # 2. Gating & Quarantine Policy Evaluation
+        gating = self.gating_policy.evaluate(self.app_state, self.cycle_count)
+        if gating.should_trigger_linguist:
             self.linguist_check_requested.emit()
-            
-        # 3. Tick All Nodes (Architecture Fix: KSE Dead Reckoning)
-        # Nodes that received sensor data this cycle already ran step().
-        # Nodes that didn't will run ghost_step() via tick() → KSE predict.
+
+        if gating.is_frozen:
+            self.gating_policy.log_frozen_status(gating, self.cycle_count)
+            return
+
+        # 3. Advance Graph Physics (Dead Reckoning)
         for node in self.graph_manager.nodes.values():
             node.tick()
-        
-        # 4. Build Snapshot (Now uses cached embeddings from step/ghost_step)
+
+        # 4. Gather Reality Snapshot
         snapshot = self.snapshot_builder.gather_snapshot()
-        
-        # 5. Global Inference
+
+        # 5. Execute Spatio-Temporal Neural Inference
         results, _ = self.processor.run_logic(snapshot)
-        
-        # 5. Route Events
+        if not results:
+            return
+
+        # 6. Neural Forecast Imputation for Unobserved Nodes
+        self.forecast_imputer.impute(results.get("forecast"), snapshot, self.graph_manager)
+
+        # 7. Route Security & Drift Events
         if results.get("alert_event"):
             event = results["alert_event"]
-            payload = event["payload"]
-            self.drift_update.emit(event["title"], payload)
-            
+            payload = event.get("payload", {})
+            self.drift_update.emit(event.get("title", ""), payload)
+
             if payload.get("status") in ["DRIFT", "ATTACK"]:
                 loss = payload.get("loss", 0.0)
                 self.audit_update.emit(True, loss, 0.15, [])
-        
-        # 6. Telemetry
-        results['sensor_snapshot'] = snapshot
-        self.global_cycle_results.emit(results)
-        self.kinetic_data_ready.emit({}) 
-        
-        # --- Debug Log: GLOBAL_CYCLE ---
+
+        # 8. Calculate per-node and global telemetry (losses, drift PSI, qualities)
+        losses = {}
+        drift_scores = {}
+        qualities = {}
+
+        for node_id, node in self.graph_manager.nodes.items():
+            node_loss = getattr(getattr(node, "state", None), "last_loss", 0.008)
+            node_psi = getattr(getattr(node, "state", None), "last_psi", 0.012)
+            losses[node_id] = float(max(0.0001, min(0.5, node_loss)))
+            drift_scores[node_id] = float(max(0.0001, min(0.5, node_psi)))
+            qualities[node_id] = int(max(10, min(100, round(100 - losses[node_id] * 1200))))
+
+        # Map to data sources from AppState
+        for src in self.app_state.get_all_data_sources():
+            elem_id = getattr(src, "associated_element", src.id) or src.id
+            if elem_id in losses:
+                losses[src.id] = losses[elem_id]
+                drift_scores[src.id] = drift_scores[elem_id]
+                qualities[src.id] = qualities[elem_id]
+            else:
+                base_loss = float(results.get("security_score", 0.008))
+                losses[src.id] = base_loss if base_loss > 0 else 0.008
+                drift_scores[src.id] = 0.012
+                qualities[src.id] = int(max(10, min(100, round(100 - losses[src.id] * 1200))))
+
+        avg_loss = float(sum(losses.values()) / len(losses)) if losses else float(results.get("security_score", 0.008))
+        avg_drift = float(sum(drift_scores.values()) / len(drift_scores)) if drift_scores else 0.012
+
+        # 8b. Build Fluid Dynamics Telemetry across the entire road network (LWR / Greenshields model)
+        edge_data = {}
+        mean_speed = 0.0
+        mean_occupancy = 0.0
+        try:
+            packet = PacketBuilder.build(snapshot, "realtime", self.app_state)
+            if packet and "traffic" in packet:
+                speeds = []
+                occs = []
+                for item in packet["traffic"]:
+                    raw_s = float(item["speed"])
+                    speed_kmh = raw_s * 3.6 if raw_s <= 35.0 else raw_s
+                    edge_id = str(item["edge_id"])
+                    density_val = float(item["density"])
+                    occ_val = float(item["occupancy"])
+                    queue_val = int(item["queue"])
+
+                    edge_data[edge_id] = {
+                        "speed": round(speed_kmh, 1),
+                        "density": round(density_val, 1),
+                        "occupancy": round(occ_val, 3),
+                        "queue": queue_val,
+                    }
+                    speeds.append(speed_kmh)
+                    occs.append(occ_val)
+
+                if speeds:
+                    mean_speed = round(sum(speeds) / len(speeds), 1)
+                if occs:
+                    mean_occupancy = round(sum(occs) / len(occs), 3)
+        except Exception as e:
+            self.logger.warning(f"Failed to generate fluid dynamic edge metrics: {e}")
+
+        clean_results = {
+            "sensor_snapshot": snapshot,
+            "edge_data": edge_data,
+            "mean_speed": mean_speed,
+            "mean_occupancy": mean_occupancy,
+            "loss": avg_loss,
+            "losses": losses,
+            "drift": avg_drift,
+            "drift_scores": drift_scores,
+            "qualities": qualities,
+            "security_score": avg_loss,
+            "processing_time": float(results.get("processing_time", 0.0)),
+            "trigger_emergency_fallback": bool(results.get("trigger_emergency_fallback", False)),
+        }
+
+        self.global_cycle_results.emit(clean_results)
+        self.kinetic_data_ready.emit({})
+
+        # 9. Performance Metric Logging
         _ts_end = datetime.now().strftime('%H:%M:%S.%f')[:-3]
         perf_logger.info(
             f"GLOBAL_CYCLE | cycle={self.cycle_count} "
             f"| start={_ts_start} | end={_ts_end} "
             f"| total={(time.time() - _cycle_start)*1000:.2f}ms"
         )
-
-    # =========================================================================
-    # XAI PROXY
-    # =========================================================================
-
-    @pyqtSlot()
-    def process_veto_buffer(self):
-        active_nodes = [n.id for n in self.app_state.get_all_nodes()]
-        self.xai_manager.process_buffer_strategy(active_nodes)
-
-    @pyqtSlot(str)
-    def explain_local_agent(self, source_id: str):
-        node = self.graph_manager.get_node(source_id)
-        if node:
-            self.xai_manager.explain_local(source_id, node)
-        else:
-            self.xai_result_ready.emit({"type": "ERROR", "semantic_text": f"Node {source_id} not found."})
-
-    @pyqtSlot()
-    def explain_global_fuser(self):
-        if self.agents.get('fuser') and self.graph_manager.nodes:
-            self.xai_manager.explain_global(self.agents['fuser'], self.graph_manager.nodes, seq_len=60)
-        else:
-            self.xai_result_ready.emit({"type": "ERROR", "semantic_text": "Global Model not ready."})

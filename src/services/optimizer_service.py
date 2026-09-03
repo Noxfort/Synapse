@@ -78,11 +78,11 @@ class OptimizerService(QObject):
         # 2. Data Loading (Delegated to DataLoader)
         if not history_file_path or not os.path.exists(history_file_path):
             logger.error("[OptimizerService] ❌ CRITICAL: No User Parquet File provided.")
-            return
+            raise ValueError(f"No User Parquet File provided or path does not exist: '{history_file_path}'")
 
         univ_data = DataLoader.load_parquet_data(history_file_path)
         if univ_data is None:
-            return
+            raise RuntimeError(f"Failed to load or parse Parquet dataset from '{history_file_path}'.")
 
         map_graph = None
         if map_file_path and os.path.exists(map_file_path):

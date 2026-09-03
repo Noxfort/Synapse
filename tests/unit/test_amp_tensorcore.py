@@ -1,16 +1,33 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
 # Copyright (C) 2026 Noxfort Systems
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# File: tests/unit/test_amp_tensorcore.py
+# Author: Gabriel Moraes
+# Date: 2026-08-31
 
 import pytest
 import torch
 import numpy as np
 
 from src.models.pi_vae_tcn import PIVAETCN
-from src.models.pinn_traffic_flow import PINNTrafficFlow
+from src.models.pino_traffic import PINOTrafficFlow1D, SpectralFeatureExtractor
 from src.models.neuro_symbolic import NeuroSymbolicModel
 from src.models.itransformer import iTransformer
 from src.models.itransformer_lite import iTransformerLite
-from src.models.patch_tst import PatchTST
+from src.models.pi_deeponet import PIDeepONet
 from src.models.diffusion_gatv2 import DiffusionGATv2
 from src.models.gatv2_lite import SpatialGAT
 from src.models.wavelet_ae_occ import WaveletAEOCC
@@ -109,3 +126,37 @@ def test_fuser_agent_amp_integration():
     output = agent.inference({"x_temporal": x_temporal})
     assert output.shape == (3,)
     assert not np.isnan(output).any()
+
+
+def test_peak_classifier_agent_amp_train_step():
+    """Verifies PeakClassifierAgent (iTransformerLite + SpectralFeatureExtractor) runs train_step with AMP."""
+    itransformer_config = {
+        'num_variates': 2,
+        'seq_len': 96,
+        'pred_len': 96,
+        'e_layers': 1,
+        'd_model': 32,
+        'learning_rate': 1e-3
+    }
+    timesnet_config = {
+        'enc_in': 1,
+        'seq_len': 96,
+        'pred_len': 96,
+        'e_layers': 1,
+        'd_model': 32,
+        'd_ff': 128,
+        'top_k': 2,
+        'learning_rate': 1e-3
+    }
+    agent = PeakClassifierAgent(
+        itransformer_config=itransformer_config,
+        timesnet_config=timesnet_config
+    )
+
+    x_windows = np.random.randn(16, 96).astype(np.float32)
+    y_labels = (np.random.rand(16) > 0.5).astype(np.float32)
+
+    loss = agent.train_step(x_windows, y_labels)
+    assert isinstance(loss, float)
+    assert not np.isnan(loss)
+    assert not np.isinf(loss)

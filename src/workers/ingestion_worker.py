@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -19,164 +19,119 @@
 # Date: 2025-12-25
 
 import time
-import requests
-import json
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
-# --- Infrastructure & Domain ---
-from src.infrastructure.sensor_gateway import SensorGateway
-from src.engine.ingestion_pipeline import IngestionPipeline
+# --- Domain & Ingestion Adapters ---
 from src.domain.app_state import AppState
+from src.domain.entities import DataSource
+from src.adapters.http_poller_adapter import HttpPollerAdapter
+from src.adapters.http_push_adapter import HttpPushAdapter
+from src.adapters.ingestion_hub import IngestionHub
+from src.adapters.mqtt_adapter import MqttIngestionAdapter
+from src.adapters.websocket_adapter import WebSocketIngestionAdapter
+from src.infrastructure.sensor_gateway import SensorGateway
+from src.pipeline.ingestion_pipeline import IngestionPipeline
+from src.utils.logging_setup import get_logger
 
-# --- Utils ---
-from src.utils.logging_setup import logger
+logger = get_logger("IngestionWorker")
+
 
 class IngestionWorker(QObject):
     """
     Worker dedicated to Data Ingestion (The 'Mouth' of the System).
     
-    Responsibility (SRP):
-    1. Manage the Local Gateway (Push Strategy) - Port 8080.
-    2. Manage HTTP Pollers (Pull Strategy) - External APIs.
-    3. Run the Zero Trust Pipeline (Filtering).
-    
-    Timing Logic:
-    - Starts Request (Global) fetching IMMEDIATELY upon start.
-    - Then waits for the configured interval (2.5 min) for subsequent fetches.
+    Agnostic Architecture (SOLID & Hexagonal Ingestion):
+    - [SRP] Orchestrates the IngestionHub and delegates transport protocols to modular adapters.
+    - [OCP] Supports dynamic registration of custom adapters (HTTP Push, HTTP Poller, MQTT, WebSockets, File Replay).
+    - [LSP] Pure decoupling: Zero Trust Pipeline, LinguistAgent and InferenceEngine remain 100% transport-blind.
+    - [DIP] Relies on IngestionHub and IIngestionAdapter abstraction layers.
     """
     
-    # Signal emitted when valid data passes the pipeline
-    # Arguments: source_id (str), payload (dict)
+    # Qt Signal emitted when valid, authenticated data passes the Zero Trust pipeline
+    # Arguments: source_id (str), payload (dict/object)
     data_ready = pyqtSignal(str, object)
 
-    def __init__(self, app_state: AppState):
+    def __init__(self, app_state: AppState, hub: Optional[IngestionHub] = None):
         super().__init__()
         self.app_state = app_state
         
-        # 1. The Filter (Zero Trust Logic)
+        # 1. Zero Trust Pipeline (Pure Verification & Buffering)
         self.pipeline = IngestionPipeline(self.app_state)
         
-        # 2. PUSH Strategy (Gateway)
-        # Listens for incoming POST requests on port 8080
-        self.gateway = SensorGateway()
-        self.gateway.data_received.connect(self._handle_incoming_data)
-        self.gateway.server_error.connect(lambda e: logger.error(f"[Ingestion] Gateway Error: {e}"))
+        # 2. Agnostic Ingestion Hub
+        self.hub = hub or IngestionHub(self.pipeline)
         
-        # 3. PULL Strategy (HTTP Workers)
-        # Manages background threads for fetching data from URLs
-        self.http_workers = ThreadPoolExecutor(max_workers=4)
-        self.last_fetch_time = 0.0
-        
-        # Configuration: Fetch Global Data every 150 seconds (2.5 minutes)
-        # BUT we will trigger the first one immediately in start()
-        self.fetch_interval = 150.0 
+        # 3. Default Transport Adapters
+        self.push_adapter = HttpPushAdapter(
+            adapter_id="http_push_gateway",
+            host="0.0.0.0",
+            port=8080,
+        )
+        self.poller_adapter = HttpPollerAdapter(
+            adapter_id="http_poller_global",
+            max_workers=4,
+            fast_poll_interval=10.0,
+            normal_poll_interval=300.0,
+        )
+        self.mqtt_adapter = MqttIngestionAdapter(
+            adapter_id="mqtt_broker_adapter",
+        )
+        self.ws_adapter = WebSocketIngestionAdapter(
+            adapter_id="websocket_stream_adapter",
+        )
 
-    def start(self):
-        """Starts the active listening components and triggers initial fetch."""
-        logger.info("[IngestionWorker] Starting Sensor Gateway...")
-        self.gateway.start()
-        
-        # --- MODIFICAÇÃO: Disparo Imediato ---
-        logger.info("[IngestionWorker] 🚀 Triggering IMMEDIATE Global Fetch (Start-up)...")
-        self._trigger_fetch()
-        # Atualiza o tempo para que a próxima busca ocorra só daqui a 2.5 min
-        self.last_fetch_time = time.time()
+        # Register default adapters in Hub
+        self.hub.register_adapter(self.push_adapter)
+        self.hub.register_adapter(self.poller_adapter)
+        self.hub.register_adapter(self.mqtt_adapter)
+        self.hub.register_adapter(self.ws_adapter)
 
-    def stop(self):
-        """Stops gateway and thread pool."""
-        logger.info("[IngestionWorker] Stopping network services...")
-        if self.gateway.isRunning():
-            self.gateway.stop()
-        self.http_workers.shutdown(wait=False)
+        # Subscribe to hub's accepted packet stream
+        self.hub.register_listener(self._handle_hub_packet)
 
-    def check_global_fetch(self, current_time: float):
+        # Sync existing data sources from state into adapters
+        self._sync_registered_sources()
+
+    @property
+    def gateway(self) -> SensorGateway:
+        """Backward-compatible access to the underlying HTTP Push SensorGateway."""
+        return self.push_adapter.gateway
+
+    def _sync_registered_sources(self) -> None:
+        """Populates all adapters with currently registered data sources."""
+        sources = self.app_state.get_all_data_sources()
+        for src in sources:
+            self.hub.register_source(src)
+
+    def start(self) -> None:
+        """Starts all ingestion adapters."""
+        logger.info("[IngestionWorker] Starting Ingestion Hub and Transport Adapters...")
+        self._sync_registered_sources()
+        self.hub.start_all()
+        logger.info("[IngestionWorker] 🚀 Transport Adapters Online (HTTP Push, Poller, MQTT, WebSocket).")
+
+    def stop(self) -> None:
+        """Gracefully stops all ingestion adapters."""
+        logger.info("[IngestionWorker] Stopping network services and adapters...")
+        self.hub.stop_all()
+
+    def check_global_fetch(self, current_time: float) -> None:
         """
-        Called by the main cycle to see if it's time to request external data.
-        Non-blocking check.
+        Called by the main cycle to evaluate polling checks across adapters.
         """
-        if current_time - self.last_fetch_time > self.fetch_interval:
-            self._trigger_fetch()
-            self.last_fetch_time = current_time
+        # Ensure new/updated sources are synced to poller
+        self._sync_registered_sources()
+        self.hub.check_poll(current_time)
 
     def get_pipeline(self) -> IngestionPipeline:
         """Exposes the pipeline for Linguist/Quarantine checks."""
         return self.pipeline
 
-    # --- INTERNAL LOGIC ---
-
-    def _trigger_fetch(self):
-        """Finds all GLOBAL sources and schedules a fetch task."""
-        sources = self.app_state.get_all_data_sources()
-        count = 0
-        for src in sources:
-            # Check if it is a Global Source (Pull) AND has a valid URL
-            if not src.is_local and src.connection_string and src.connection_string.startswith("http"):
-                logger.info(f"[IngestionWorker] ☁️ Fetching data from Global Source: '{src.name}'...")
-                # Dispatch to thread pool
-                self.http_workers.submit(self._worker_fetch, src.id, src.connection_string)
-                count += 1
-        
-        if count == 0:
-            # Silent debug log if nothing to fetch
-            pass
-
-    def _worker_fetch(self, source_id: str, url: str):
+    def _handle_hub_packet(self, source_id: str, payload: Any, metadata: Optional[Dict[str, Any]] = None) -> None:
         """
-        Background thread logic to fetch data via HTTP GET.
-        Handles JSON and simple CSV/Text responses.
+        Invoked when an accepted packet is authenticated by the Zero Trust pipeline.
+        Emits thread-safe Qt data_ready signal downstream to InferenceEngine and UI.
         """
-        try:
-            # 10s timeout to prevent hanging threads
-            response = requests.get(url, timeout=10)
-            
-            if response.status_code == 200:
-                payload = {}
-                
-                # A. Try JSON
-                try:
-                    payload = response.json()
-                except:
-                    # B. Fallback to Text/CSV
-                    text_data = response.text.strip()
-                    if ',' in text_data or '\n' in text_data:
-                         payload = {"raw_csv": text_data}
-                         # Simple heuristic parsing (Key=Value or CSV)
-                         parts = text_data.split(',')
-                         for p in parts:
-                             if '=' in p:
-                                 k, v = p.split('=', 1)
-                                 payload[k.strip()] = v.strip()
-                    else:
-                        payload = {"value": text_data}
-                
-                # C. Zero Trust Injection
-                # If the external API didn't send the ID, we inject it so the pipeline knows who it is.
-                if isinstance(payload, dict) and 'source_id' not in payload:
-                    payload['source_id'] = source_id
-
-                # D. Send to Main Pipeline
-                # We call the handler directly (thread-safe due to internal locks or signal emission downstream)
-                self._handle_incoming_data(source_id, payload)
-                
-            else:
-                logger.warning(f"[IngestionWorker] Fetch failed for {source_id}: HTTP {response.status_code}")
-
-        except Exception as e:
-            logger.warning(f"[IngestionWorker] Connection error for {source_id}: {e}")
-
-    @pyqtSlot(str, object)
-    def _handle_incoming_data(self, source_id: str, payload: Any):
-        """
-        The Central Funnel. 
-        All data (Push or Pull) ends up here to be filtered by the Pipeline.
-        """
-        # 1. Pipeline Validation (Zero Trust)
-        is_accepted = self.pipeline.process_packet(source_id, payload)
-        
-        # 2. Emission
-        if is_accepted:
-            # Only emit if the data passed the strict security checks
-            self.data_ready.emit(source_id, payload)
+        self.data_ready.emit(source_id, payload)

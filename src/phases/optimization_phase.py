@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -27,6 +27,9 @@ from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
 from src.domain.app_state import AppState
 from src.domain.entities import SourceType
+from src.utils.logging_setup import get_logger
+
+logger = get_logger("OptimizationPhase")
 
 if TYPE_CHECKING:
     from src.services.optimizer_service import OptimizerService
@@ -66,6 +69,7 @@ class OptimizationPhase(QObject):
             return False
 
         self.log_message.emit(">>> Starting Phase 0: Optimization...")
+        logger.info("🔒 [Fase 0: Otimização] Sensores globais e locais cadastrados permanecem em STANDBY. Nenhuma requisição ou escuta ativa nesta fase.")
         
         # 1. Mandatory Check: Map Source
         # GATv2 Lite requires graph topology for calibration.
@@ -102,18 +106,26 @@ class OptimizationPhase(QObject):
             self.error_occurred.emit(error_msg)
             return False
 
-        # 2. Resolve Historical Data (Optional but recommended)
-        parquet_path = None
-        for src in self.app_state.get_all_data_sources():
-            # FIXED: Defensive check to prevent AttributeError if connection_string is bool
-            conn_str = src.connection_string
-            if isinstance(conn_str, str) and conn_str.endswith(".parquet"):
-                if os.path.exists(conn_str):
-                    parquet_path = conn_str
-                    break
+        # --- INTELLIGENT SKIP CHECK ---
+        checkpoint_path = os.path.join(os.path.expanduser("~"), "Documentos", "Synapse", "Checkpoint", "best_hparams.pth")
+        if not os.path.exists(checkpoint_path):
+            checkpoint_path = os.path.join(os.path.expanduser("~"), "Documents", "Synapse", "Checkpoint", "best_hparams.pth")
         
-        if not parquet_path:
-            self.log_message.emit("⚠️ Warning: No historical Parquet data found. Optimization will be limited.")
+        if os.path.exists(checkpoint_path) and os.path.getsize(checkpoint_path) > 0:
+            self.log_message.emit("💾 Checkpoint found ('best_hparams.pth'). Phase 0 already completed.")
+            self.log_message.emit(">>> SKIPPING Phase 0: Hyperparameters are already optimized.")
+            self.optimization_finished.emit()
+            return True
+
+        # 2. Mandatory Check: Historical Parquet Data
+        parquet_path = self._resolve_parquet_path()
+        if not parquet_path or not os.path.exists(parquet_path):
+            error_msg = "❌ Optimization Aborted: A Historical Parquet Dataset (.parquet) is MANDATORY for AutoML optimization. Please import a Parquet dataset in Step 2 of the Setup Wizard."
+            self.log_message.emit(error_msg)
+            self.error_occurred.emit(error_msg)
+            return False
+
+        self.log_message.emit(f"📊 Historical Parquet Dataset resolved: {parquet_path}")
 
         # 3. Initialize Service
         self.optimizer_service = self._OptimizerService()
@@ -127,6 +139,46 @@ class OptimizationPhase(QObject):
         )
         self.opt_thread.start()
         return True
+
+    def _resolve_parquet_path(self) -> Optional[str]:
+        """
+        Resolves the historical Parquet dataset path using multi-tier fallback:
+        1. AppState registered data sources (with .parquet connection string)
+        2. Data Lake Base directory (~/Documentos/Synapse/datalake/base/*.parquet)
+        3. Data Lake Golden directory (~/Documentos/Synapse/datalake/golden/*.parquet)
+        """
+        # 1. Check in AppState data sources
+        for src in self.app_state.get_all_data_sources():
+            conn_str = src.connection_string
+            if isinstance(conn_str, str) and conn_str.endswith(".parquet"):
+                expanded = os.path.expanduser(conn_str)
+                if os.path.exists(expanded):
+                    return expanded
+
+        # 2. Check in Data Lake Base storage
+        try:
+            from src.managers.storage_manager import StorageManager
+            sm = StorageManager()
+            base_dir = os.path.expanduser(sm.get_datalake_base_path())
+            if os.path.exists(base_dir):
+                import glob
+                base_files = glob.glob(os.path.join(base_dir, "*.parquet"))
+                if base_files:
+                    base_files.sort(key=os.path.getmtime, reverse=True)
+                    return base_files[0]
+            
+            # 3. Check in Data Lake Golden storage
+            golden_dir = os.path.expanduser(sm.get_datalake_golden_path())
+            if os.path.exists(golden_dir):
+                import glob
+                golden_files = glob.glob(os.path.join(golden_dir, "*.parquet"))
+                if golden_files:
+                    golden_files.sort(key=os.path.getmtime, reverse=True)
+                    return golden_files[0]
+        except Exception as e:
+            logger.warning(f"[OptimizationPhase] Error checking StorageManager for parquet: {e}")
+
+        return None
 
     def stop(self):
         """Stops the optimization service gracefully."""

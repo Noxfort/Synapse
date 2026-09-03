@@ -23,9 +23,10 @@ import logging
 from typing import Any, Optional, Dict
 
 from src.agents.base_agent import BaseAgent
-from src.domain.interfaces import ICoordinatorPipeline, ICoordinatorTrainer
-from src.services.coordinator_pipeline import CoordinatorPipeline
-from src.services.coordinator_trainer import CoordinatorTrainer
+from src.interfaces.pipelines import ICoordinatorPipeline
+from src.interfaces.trainers import ICoordinatorTrainer
+from src.pipeline.coordinator_pipeline import CoordinatorPipeline
+from src.trainer.coordinator_trainer import CoordinatorTrainer
 
 logger = logging.getLogger("Synapse.CoordinatorAgent")
 
@@ -37,8 +38,8 @@ class CoordinatorAgent(BaseAgent):
     Pure Orchestrator Architecture (SOLID Compliant):
     - Single Responsibility: Manages spatial reasoning across the graph topology.
     - Delegations:
-      -> Spatial GAT Execution: ICoordinatorPipeline (src/services/coordinator_pipeline.py)
-      -> Graph Optimization Routines: ICoordinatorTrainer (src/services/coordinator_trainer.py)
+      -> Spatial GAT Execution: ICoordinatorPipeline (src/pipeline/coordinator_pipeline.py)
+      -> Graph Optimization Routines: ICoordinatorTrainer (src/trainer/coordinator_trainer.py)
     """
 
     def __init__(

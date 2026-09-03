@@ -21,8 +21,8 @@
 from typing import Dict, Any, Optional
 
 from src.agents.specialist_agent import SpecialistAgent
-from src.services.specialist_pipeline import SpecialistPipeline
-from src.services.specialist_trainer import SpecialistTrainer
+from src.pipeline.specialist_pipeline import SpecialistPipeline
+from src.trainer.specialist_trainer import SpecialistTrainer
 
 
 class SpecialistFactory:

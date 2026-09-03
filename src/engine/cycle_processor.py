@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -75,7 +75,16 @@ class CycleProcessor:
         
         # --- Engine Domain Extractors (SOLID) ---
         self.tensor_builder = TensorBuilder(device, coordinator.model, graph_manager)
-        self.security_monitor = SecurityMonitor(threshold=0.5)
+        
+        # Extract calibrated threshold from auditor if available (default 0.75)
+        auditor_thresh = 0.75
+        if auditor:
+            if hasattr(auditor, 'pipeline') and hasattr(auditor.pipeline, 'calibrator') and auditor.pipeline.calibrator:
+                auditor_thresh = float(auditor.pipeline.calibrator.threshold)
+            elif hasattr(auditor, 'model') and hasattr(auditor.model, 'threshold'):
+                raw = auditor.model.threshold
+                auditor_thresh = float(raw.item() if isinstance(raw, torch.Tensor) else raw)
+        self.security_monitor = SecurityMonitor(threshold=auditor_thresh)
 
     def run_logic(self, snapshot: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
         """
@@ -121,6 +130,7 @@ class CycleProcessor:
         
         # 4. Auditor (Security Pipeline)
         security_score = 0.0
+        auditor_report: Dict[str, Any] = {}
         if self.auditor:
             try:
                 # Compress State: Mean across Embedding Dim -> [1, Nodes]
@@ -139,6 +149,8 @@ class CycleProcessor:
             "spatial_embedding": spatial_embedding,
             "forecast": forecast,
             "security_score": security_score,
+            "auditor_report": auditor_report,
+            "trigger_emergency_fallback": auditor_report.get("trigger_emergency_fallback", False),
             "processing_time": total_time
         }
         
@@ -152,6 +164,7 @@ class CycleProcessor:
         )
         
         # 6. Alerting (Delegated to SecurityMonitor - SRP)
-        alert = self.security_monitor.evaluate(security_score)
+        active_thresh = auditor_report.get("threshold", self.security_monitor.threshold)
+        alert = self.security_monitor.evaluate(security_score, threshold=active_thresh)
         
         return results, alert

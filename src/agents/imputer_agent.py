@@ -22,9 +22,10 @@ import numpy as np
 from typing import Any, Optional
 
 from src.agents.base_agent import BaseAgent
-from src.domain.interfaces import IImputerPipeline, IImputerTrainer
-from src.services.imputer_pipeline import ImputerPipeline
-from src.services.imputer_trainer import ImputerTrainer
+from src.interfaces.pipelines import IImputerPipeline
+from src.interfaces.trainers import IImputerTrainer
+from src.pipeline.imputer_pipeline import ImputerPipeline
+from src.trainer.imputer_trainer import ImputerTrainer
 
 
 class ImputerAgent(BaseAgent):
@@ -34,8 +35,8 @@ class ImputerAgent(BaseAgent):
     Pure Orchestrator Architecture (SOLID Compliant):
     - Single Responsibility: Manages temporal gap-filling and data reconstruction.
     - Delegations:
-      -> Chunked Sliding-Window Reconstruction: IImputerPipeline (src/services/imputer_pipeline.py)
-      -> Masked Optimization Routine: IImputerTrainer (src/services/imputer_trainer.py)
+      -> Chunked Sliding-Window Reconstruction: IImputerPipeline (src/pipeline/imputer_pipeline.py)
+      -> Masked Optimization Routine: IImputerTrainer (src/trainer/imputer_trainer.py)
     """
 
     def __init__(

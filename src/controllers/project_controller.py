@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -46,6 +46,7 @@ class ProjectController(QObject):
     # --- SIGNALS ---
     project_loaded = pyqtSignal(str)        # Emits project name/path
     project_saved = pyqtSignal(str)
+    project_cleared = pyqtSignal()
     
     source_added = pyqtSignal(str)          # Emits source ID
     source_removed = pyqtSignal(str)
@@ -68,7 +69,8 @@ class ProjectController(QObject):
         """Resets the application state to default."""
         logger.info("[ProjectController] Creating New Project...")
         self.app_state.clear()
-        self.log_message.emit("New Project Created.")
+        self.project_cleared.emit()
+        self.log_message.emit("Project reset to clean state.")
 
     @pyqtSlot(str)
     def save_project(self, file_path: str):
@@ -126,14 +128,12 @@ class ProjectController(QObject):
             return
 
         # 3. Creation
-        # Assuming ID generation happens inside AppState or we generate a UUID here.
-        # For this refactor, let's assume AppState.add_source handles ID gen if None.
         new_source = DataSource(
-            id=f"src_{len(self.app_state.get_all_data_sources()) + 1}",
+            id=self.app_state.get_next_source_id(),
             name=name,
             source_type=sType,
             connection_string=connection_string,
-            status=SourceStatus.ACTIVE
+            status=SourceStatus.QUARANTINE
         )
 
         # 4. Domain Update
@@ -155,28 +155,18 @@ class ProjectController(QObject):
             self.error_occurred.emit("Map file not found.")
             return
 
-        # Create a special DataSource for the map
-        # Or use a dedicated field in AppState if implemented.
-        # Based on previous context, AppState treats map as a special source or dedicated logic.
-        
-        # Logic: Update AppState dedicated map path
-        # (Assuming AppState has a specialized method or we find the map source)
-        
-        # Strategy: Remove old map source if exists
-        current_map = self.app_state.get_map_source_path()
-        if current_map:
-            # Logic to find and remove old map entry if stored as DataSource
-            pass
+        abs_path = os.path.abspath(file_path)
+        self.app_state.set_map_source_path(abs_path)
 
         # Add new Map Source
         map_source = DataSource(
             id="map_main",
             name="City Map",
             source_type=SourceType.SUMO_NET_XML,
-            connection_string=file_path,
+            connection_string=abs_path,
             status=SourceStatus.ACTIVE
         )
         self.app_state.add_data_source(map_source)
         
-        self.map_updated.emit(file_path)
-        self.log_message.emit(f"Map set to: {os.path.basename(file_path)}")
+        self.map_updated.emit(abs_path)
+        self.log_message.emit(f"Map set to: {os.path.basename(abs_path)}")

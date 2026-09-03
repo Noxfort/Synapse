@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -83,6 +83,13 @@ class AgentFactory:
             self.registry.register(source_id, 'linguist', agent)
         return agent
 
+    def release_linguist(self, source_id: str) -> None:
+        """
+        Explicitly deactivates and unregisters the ephemeral LinguistAgent for a sensor source,
+        freeing GPU/RAM resources immediately after onboarding/teaching.
+        """
+        self.registry.remove(source_id, 'linguist')
+
     def get_or_create_specialist(self, source_id: str) -> SpecialistAgent:
         """Retrieves or creates SpecialistAgent for a sensor source."""
         agent = self.registry.get(source_id, 'specialist')
@@ -117,11 +124,15 @@ class AgentFactory:
     @classmethod
     def create(cls, agent_type: str, config: Optional[Dict[str, Any]] = None, **kwargs: Any) -> Any:
         """Generic Creational Dispatcher (OCP)."""
-        factory = cls._domain_factories.get(agent_type.lower())
+        cfg = config or {}
+        key = agent_type.lower()
+        factory = cls._domain_factories.get(key)
         if factory:
-            return factory.create(config=config, **kwargs)
-        if agent_type.lower() == "fuser":
-            return cls.create_fuser(config or {}, **kwargs)
+            return factory.create(config=cfg, **kwargs)
+        if key == "fuser":
+            return cls.create_fuser(cfg, **kwargs)
+        if key in ("classifier", "peak_classifier"):
+            return cls.create_classifier(cfg, **kwargs)
         raise ValueError(f"[AgentFactory] Unknown agent type: '{agent_type}'")
 
     @staticmethod
@@ -180,11 +191,20 @@ class AgentFactory:
         )
 
     @staticmethod
-    def create_classifier(config: Dict[str, Any], input_dim: int, output_dim: int) -> PeakClassifierAgent:
+    def create_classifier(config: Dict[str, Any], output_path: str = "peak_schedule.json", **kwargs: Any) -> PeakClassifierAgent:
         p_clf = config.get('classifier', {})
+        itransformer_cfg = p_clf.get('itransformer', {
+            'num_variates': kwargs.get('input_dim', 2),
+            'd_model': p_clf.get('d_model', 32),
+            'n_heads': p_clf.get('n_heads', 2)
+        })
+        timesnet_cfg = p_clf.get('timesnet', {
+            'enc_in': p_clf.get('enc_in', 1),
+            'c_out': p_clf.get('c_out', 1),
+            'learning_rate': p_clf.get('lr', 1e-3)
+        })
         return PeakClassifierAgent(
-            input_dim=input_dim,
-            hidden_dim=p_clf.get('hidden_dim', 64),
-            output_dim=output_dim,
-            learning_rate=p_clf.get('lr', 0.001)
+            itransformer_config=itransformer_cfg,
+            timesnet_config=timesnet_cfg,
+            output_path=output_path
         )

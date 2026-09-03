@@ -1,0 +1,44 @@
+# SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
+# Copyright (C) 2026 Noxfort Systems
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# File: ui/src-tauri/Cargo.toml
+# Author: Gabriel Moraes
+# Date: 2026-08-29
+
+[package]
+name = "synapse-desktop"
+version = "2.0.0"
+description = "SYNAPSE - Intelligent Perception Gateway for Traffic Management"
+authors = ["Gabriel Moraes", "Noxfort Systems"]
+license = "AGPL-3.0-or-later"
+edition = "2021"
+
+[lib]
+name = "synapse_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.0.0", features = ["tray-icon"] }
+tauri-plugin-shell = "2.0.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+log = "0.4"
+env_logger = "0.11"
+tauri-plugin-single-instance = "2"

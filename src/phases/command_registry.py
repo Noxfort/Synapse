@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -17,11 +17,6 @@
 # File: src/phases/command_registry.py
 # Author: Gabriel Moraes
 # Date: 2026-04-27
-#
-# SOLID Refactoring:
-# - [OCP] Replaces the hardcoded if/elif dispatch chain in
-#   RuntimeLauncher.handle_command(). New commands can be added via
-#   register() without modifying the dispatcher itself.
 
 import logging
 from typing import Callable, Dict, Optional

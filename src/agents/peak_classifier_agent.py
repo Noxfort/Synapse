@@ -26,10 +26,10 @@ from torch.amp import autocast, GradScaler
 
 # SYNAPSE Local Models
 from src.models.itransformer_lite import iTransformerLite
-from src.models.timesnet import TimesNet
+from src.models.pino_traffic import SpectralFeatureExtractor
 
-# SYNAPSE Services (SRP Extraction)
-from src.services.peak_pipeline import ColumnDiscovery, PeakPipeline
+# SYNAPSE Pipelines (SRP Extraction)
+from src.pipeline.peak_pipeline import ColumnDiscovery, PeakPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class PeakClassifierAgent(nn.Module):
     Refactored V2 (SOLID):
     - Column discovery delegated to ColumnDiscovery service.
     - Pipeline execution delegated to PeakPipeline service.
-    - Agent now owns ONLY: model initialization, train_step, and orchestration.
+    - Uses Fourier SpectralFeatureExtractor (PINO block) for robust frequency domain feature extraction.
     """
 
     def __init__(self, itransformer_config: dict, timesnet_config: dict, output_path: str = "peak_schedule.json"):
@@ -56,6 +56,7 @@ class PeakClassifierAgent(nn.Module):
         itransformer_config['pred_len'] = self.chunk_size
         timesnet_config['seq_len'] = self.chunk_size
         timesnet_config['pred_len'] = self.chunk_size
+        timesnet_config.setdefault('enc_in', 1)
         
         # Neural Models
         self.itransformer = iTransformerLite(
@@ -66,7 +67,7 @@ class PeakClassifierAgent(nn.Module):
         self.itransformer.eval()
         
         timesnet_config.pop("num_kernels", None)
-        self.timesnet = TimesNet(**timesnet_config).to(self.device)
+        self.timesnet = SpectralFeatureExtractor(**timesnet_config).to(self.device)
         
         # Auxiliary Classifier Head for HPO Tuning
         self.hpo_classifier = nn.Linear(timesnet_config.get('enc_in', 1), 1).to(self.device)

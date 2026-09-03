@@ -1,7 +1,20 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
 # Copyright (C) 2026 Noxfort Systems
 #
-# File: src/agents/mixins/pbt_mixin.py
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# File: src/mixins/pbt_mixin.py
 # Author: Gabriel Moraes
 # Date: 2026-04-26
 
@@ -51,9 +64,16 @@ class PBTMixin:
 
     def _update_dropout_layers(self):
         """Updates all dropout layers in the model to the current rate."""
-        for m in self.model.modules():
-            if isinstance(m, (nn.Dropout, nn.Dropout1d, nn.Dropout2d)):
-                m.p = self.dropout
+        if hasattr(self.model, "modules"):
+            for m in self.model.modules():
+                if isinstance(m, (nn.Dropout, nn.Dropout1d, nn.Dropout2d)):
+                    m.p = self.dropout
+        elif isinstance(self.model, dict):
+            for sub_mod in self.model.values():
+                if sub_mod is not None and hasattr(sub_mod, "modules"):
+                    for m in sub_mod.modules():
+                        if isinstance(m, (nn.Dropout, nn.Dropout1d, nn.Dropout2d)):
+                            m.p = self.dropout
 
     def get_pbt_state(self) -> Dict[str, Any]:
         """Exports PBT-relevant state for checkpointing."""

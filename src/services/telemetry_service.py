@@ -1,5 +1,5 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
-# Copyright (C) 2025 Noxfort Systems
+# Copyright (C) 2026 Noxfort Systems
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -16,139 +16,74 @@
 #
 # File: src/services/telemetry_service.py
 # Author: Gabriel Moraes
-# Date: 2025-11-23
+# Date: 2026-08-19
+
+"""
+Telemetry Service (SOLID: SRP & DIP).
+
+Decouples telemetry lifecycle, MQTT reporting and shutdown flushes from controllers.
+Implements ITelemetryService interface.
+"""
 
 import time
-import threading
-import psutil
 import logging
-import os
-from pathlib import Path
-from prometheus_client import start_http_server, Counter, Gauge, Histogram
-from torch.utils.tensorboard import SummaryWriter
+from typing import Optional
 
-# Import our logger setup
-from src.utils.logging_setup import setup_logger
+from PyQt6.QtCore import QCoreApplication
+from src.infrastructure.monitor_client import MonitorClient
+from src.interfaces.controllers import ITelemetryService
 
-class TelemetryService:
+logger = logging.getLogger(__name__)
+
+
+class TelemetryService(ITelemetryService):
     """
-    Central Telemetry Service.
-    
-    Responsibility:
-    - Exposes internal system metrics to Prometheus/Grafana.
-    - Monitors System Health (CPU, Memory).
-    - Tracks Business Metrics (Inference Latency, Data Throughput, Auditor Vetos).
-    - Runs an embedded HTTP server to serve these metrics.
+    Manages telemetry connections, incident reporting and graceful shutdown flushes.
     """
 
-    def __init__(self, port: int = 8000):
-        """
-        Args:
-            port: The HTTP port to expose metrics on (default 8000).
-        """
-        self.port = port
-        self.logger = setup_logger("TelemetryService")
-        self._is_running = False
-        
-        # --- METRICS DEFINITIONS ---
-        
-        # 1. System Metrics
-        self.system_cpu_usage = Gauge('synapse_system_cpu_percent', 'Current system CPU usage')
-        self.system_memory_usage = Gauge('synapse_system_memory_percent', 'Current system Memory usage')
-        self.app_uptime = Gauge('synapse_uptime_seconds', 'Application uptime in seconds')
-        
-        # 2. Data Ingestion Metrics
-        self.data_ingested = Counter('synapse_data_ingested_total', 'Total data points received', ['source_id'])
-        
-        # 3. AI Performance Metrics
-        # Buckets suitable for sub-second inference (0.01s to 1.0s)
-        self.inference_latency = Histogram(
-            'synapse_ai_inference_duration_seconds', 
-            'Time spent in AI inference', 
-            ['model_type'] # e.g., 'tcn', 'gat', 'itransformer'
-        )
-        
-        # 4. Safety Metrics (Critical)
-        self.auditor_vetos = Counter('synapse_auditor_veto_total', 'Total number of actions vetoed by Safety AE')
-        self.auditor_checks = Counter('synapse_auditor_checks_total', 'Total number of states audited')
+    def __init__(self, monitor_client: Optional[MonitorClient] = None):
+        self._monitor_client: Optional[MonitorClient] = monitor_client
 
-        self.start_time = time.time()
-        
-        # 5. TensorBoard Engine (Initialized on start)
-        self.tb_writer = None
+    @property
+    def monitor_client(self) -> Optional[MonitorClient]:
+        return self._monitor_client
 
-    def _init_tensorboard(self):
-        """Initializes TensorBoard SummaryWriter pointing to the shared volume logic."""
-        try:
-            # We map this to the universal installer path for tensorboard docker composition
-            tb_log_dir = os.path.expanduser("~/.local/share/synapse/logs/tensorboard")
-            os.makedirs(tb_log_dir, exist_ok=True)
-            self.tb_writer = SummaryWriter(log_dir=tb_log_dir)
-            self.logger.info(f"TensorBoard SummaryWriter initialized at {tb_log_dir}")
-        except Exception as e:
-            self.logger.error(f"Failed to initialize TensorBoard SummaryWriter: {e}")
+    @property
+    def enabled(self) -> bool:
+        return self._monitor_client.enabled if self._monitor_client else False
 
-    def start(self):
-        """Starts the Prometheus HTTP server and the system monitoring thread."""
-        try:
-            # Start Prometheus Server (Non-blocking, it spawns its own thread)
-            start_http_server(self.port)
-            self.logger.info(f"Prometheus metrics server started on port {self.port}")
-            
-            # Start internal monitoring loop
-            self._is_running = True
-            self._init_tensorboard()
-            self.monitor_thread = threading.Thread(target=self._run_system_monitor, daemon=True)
-            self.monitor_thread.start()
-            
-        except Exception as e:
-            self.logger.error(f"Failed to start Telemetry Service: {e}")
-
-    def stop(self):
-        """Stops the internal monitoring loop."""
-        self._is_running = False
-        if self.tb_writer:
-            self.tb_writer.close()
-        self.logger.info("Telemetry Service stopped.")
-
-    def _run_system_monitor(self):
-        """Periodically updates system-level metrics (CPU/RAM)."""
-        while self._is_running:
+    def init_telemetry(self, enabled: bool, host: str, port: int) -> None:
+        """Initializes or restarts the background MonitorClient."""
+        if self._monitor_client:
             try:
-                # Update Gauge values
-                self.system_cpu_usage.set(psutil.cpu_percent())
-                self.system_memory_usage.set(psutil.virtual_memory().percent)
-                self.app_uptime.set(time.time() - self.start_time)
-                
-                time.sleep(5) # Update every 5 seconds
+                self._monitor_client.stop()
             except Exception as e:
-                self.logger.error(f"Error in system monitor: {e}")
-                time.sleep(5)
+                logger.warning(f"[TelemetryService] Failed stopping previous monitor client: {e}")
 
-    # --- Public Recording Methods ---
+        self._monitor_client = MonitorClient(host=host, port=port, enabled=enabled)
+        logger.info(f"[TelemetryService] Telemetry configured (enabled={enabled}, host={host}:{port})")
 
-    def record_ingestion(self, source_id: str):
-        """Increment data counter for a specific source."""
-        self.data_ingested.labels(source_id=source_id).inc()
+    def reconfigure_telemetry(self, enabled: bool, host: str, port: int) -> None:
+        """Reconfigures telemetry settings."""
+        self.init_telemetry(enabled, host, port)
 
-    def record_inference_time(self, model_type: str, duration: float):
-        """Record latency observation."""
-        self.inference_latency.labels(model_type=model_type).observe(duration)
+    def report_error(self, message: str) -> None:
+        """Dispatches a critical software incident through the monitor client."""
+        if self._monitor_client and self._monitor_client.enabled:
+            try:
+                self._monitor_client.report_incident(category="SOFTWARE", level="CRITICAL", message=message)
+            except Exception as e:
+                logger.error(f"[TelemetryService] Error reporting critical incident: {e}")
 
-    def record_audit_result(self, is_safe: bool):
-        """Record safety check result."""
-        self.auditor_checks.inc()
-        if not is_safe:
-            self.auditor_vetos.inc()
-
-    def record_loss(self, model_name: str, epoch: int, loss: float):
+    def report_shutdown(self) -> None:
         """
-        Record a training or inference loss scalar to TensorBoard.
-        Args:
-            model_name (str): Identifier for the neural network (e.g. 'fuser_itransformer')
-            epoch (int): The current training step or inference sequence frame index.
-            loss (float): The MSE or computed loss value.
+        Dispatches a shutdown event and waits briefly to allow the MQTT queue to flush.
         """
-        if self.tb_writer:
-            # e.g. Loss/fuser_itransformer
-            self.tb_writer.add_scalar(f"Loss/{model_name}", loss, epoch)
+        if self._monitor_client and self._monitor_client.enabled:
+            try:
+                msg = QCoreApplication.translate("MainController", "System Shutdown Initiated")
+                self._monitor_client.report_incident(category="SOFTWARE", level="CRITICAL", message=msg)
+                # Blocking delay ensuring MQTT queue flush before process termination
+                time.sleep(0.5)
+            except Exception as e:
+                logger.error(f"[TelemetryService] Error during shutdown telemetry report: {e}")

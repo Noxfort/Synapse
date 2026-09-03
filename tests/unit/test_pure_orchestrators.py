@@ -1,6 +1,19 @@
 # SYNAPSE - A Gateway of Intelligent Perception for Traffic Management
 # Copyright (C) 2026 Noxfort Systems
 #
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
 # File: tests/unit/test_pure_orchestrators.py
 # Author: Gabriel Moraes
 # Date: 2026-08-17
@@ -10,14 +23,22 @@ import torch
 import numpy as np
 
 # Domain Protocols
-from src.domain.interfaces import (
-    IAgent,
-    IAuditorPipeline, IAuditorTrainer,
-    IImputerPipeline, IImputerTrainer,
-    ICorrectorPipeline, ICorrectorTrainer,
-    ISpecialistPipeline, ISpecialistTrainer,
-    ILinguistPipeline, ILinguistTrainer,
-    ICoordinatorPipeline, ICoordinatorTrainer
+from src.interfaces.agents import IAgent
+from src.interfaces.pipelines import (
+    IAuditorPipeline,
+    IImputerPipeline,
+    ICorrectorPipeline,
+    ISpecialistPipeline,
+    ILinguistPipeline,
+    ICoordinatorPipeline
+)
+from src.interfaces.trainers import (
+    IAuditorTrainer,
+    IImputerTrainer,
+    ICorrectorTrainer,
+    ISpecialistTrainer,
+    ILinguistTrainer,
+    ICoordinatorTrainer
 )
 
 # Refactored Facade Agents
@@ -30,18 +51,18 @@ from src.agents.coordinator_agent import CoordinatorAgent
 from src.agents.fuser_agent import FuserAgent
 
 # Pipelines & Trainers
-from src.services.auditor_pipeline import AuditorPipeline
-from src.services.auditor_trainer import AuditorTrainer
-from src.services.imputer_pipeline import ImputerPipeline
-from src.services.imputer_trainer import ImputerTrainer
-from src.services.corrector_pipeline import CorrectorPipeline
-from src.services.corrector_trainer import CorrectorTrainer
-from src.services.specialist_pipeline import SpecialistPipeline
-from src.services.specialist_trainer import SpecialistTrainer
-from src.services.linguist_pipeline import LinguistPipeline
-from src.services.linguist_trainer import LinguistTrainer
-from src.services.coordinator_pipeline import CoordinatorPipeline
-from src.services.coordinator_trainer import CoordinatorTrainer
+from src.pipeline.auditor_pipeline import AuditorPipeline
+from src.trainer.auditor_trainer import AuditorTrainer
+from src.pipeline.imputer_pipeline import ImputerPipeline
+from src.trainer.imputer_trainer import ImputerTrainer
+from src.pipeline.corrector_pipeline import CorrectorPipeline
+from src.trainer.corrector_trainer import CorrectorTrainer
+from src.pipeline.specialist_pipeline import SpecialistPipeline
+from src.trainer.specialist_trainer import SpecialistTrainer
+from src.pipeline.linguist_pipeline import LinguistPipeline
+from src.trainer.linguist_trainer import LinguistTrainer
+from src.pipeline.coordinator_pipeline import CoordinatorPipeline
+from src.trainer.coordinator_trainer import CoordinatorTrainer
 
 # Central Factory
 from src.factories.agent_factory import AgentFactory

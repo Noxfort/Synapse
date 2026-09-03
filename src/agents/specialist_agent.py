@@ -24,9 +24,10 @@ from typing import List, Any, Optional
 
 from src.agents.base_agent import BaseAgent
 from src.mixins.pbt_mixin import PBTMixin
-from src.domain.interfaces import ISpecialistPipeline, ISpecialistTrainer
-from src.services.specialist_pipeline import SpecialistPipeline
-from src.services.specialist_trainer import SpecialistTrainer
+from src.interfaces.pipelines import ISpecialistPipeline
+from src.interfaces.trainers import ISpecialistTrainer
+from src.pipeline.specialist_pipeline import SpecialistPipeline
+from src.trainer.specialist_trainer import SpecialistTrainer
 
 
 class SpecialistAgent(BaseAgent, PBTMixin):
@@ -36,8 +37,8 @@ class SpecialistAgent(BaseAgent, PBTMixin):
     Pure Orchestrator Architecture (SOLID Compliant):
     - Single Responsibility: Manages temporal feature extraction and PBT population lifecycle.
     - Delegations:
-      -> TCN Execution & Embeddings: ISpecialistPipeline (src/services/specialist_pipeline.py)
-      -> TCN Training Routines: ISpecialistTrainer (src/services/specialist_trainer.py)
+      -> TCN Execution & Embeddings: ISpecialistPipeline (src/pipeline/specialist_pipeline.py)
+      -> TCN Training Routines: ISpecialistTrainer (src/trainer/specialist_trainer.py)
     """
 
     def __init__(
@@ -88,9 +89,36 @@ class SpecialistAgent(BaseAgent, PBTMixin):
         self.decoder = self.model["decoder"] if "decoder" in self.model else None
         self.reconstruction_head = self.model["reconstruction_head"] if "reconstruction_head" in self.model else None
 
+        # Extractor and Modality attached by the Linguist
+        self.extractor: Optional[Any] = None
+        self.semantic_type: Optional[str] = None
+        self.inferred_unit: Optional[str] = None
+
         # PBT Metrics
         self.running_loss = 0.0
         self.steps = 0
+
+    def set_extractor(
+        self,
+        extractor: Any,
+        semantic_type: Optional[str] = None,
+        unit: Optional[str] = None
+    ) -> 'SpecialistAgent':
+        """
+        Attaches the extraction pipeline and modality taught by the Linguist,
+        enabling this local TCN to process raw sensor packets autonomously.
+        """
+        self.extractor = extractor
+        self.semantic_type = semantic_type
+        self.inferred_unit = unit
+        return self
+
+    @property
+    def optimizer(self):
+        """Delegates optimizer access to the underlying trainer."""
+        if hasattr(self.trainer, "optimizer"):
+            return self.trainer.optimizer
+        return getattr(self, "_optimizer", None)
 
     def freeze(self) -> 'SpecialistAgent':
         """Freezes specialist weights for drift-safe real-time inference (Freeze phase)."""
@@ -111,11 +139,26 @@ class SpecialistAgent(BaseAgent, PBTMixin):
         return False
 
     def inference(self, input_data: Any) -> Any:
-        """Standard Interface Wrapper for predict logic."""
+        """
+        Standard Interface Wrapper: accepts either raw sensor packets (using its attached extractor)
+        or numerical time-series arrays, and outputs 32-dim latent space embeddings.
+        """
         return self.predict(input_data)
 
-    def predict(self, input_sequence: np.ndarray) -> np.ndarray:
-        """Delegates TCN feature forecasting and embedding extraction to SpecialistPipeline."""
+    def predict(self, input_sequence: Any) -> np.ndarray:
+        """
+        Processes the input sequence or raw payload and returns TCN latent embeddings.
+        """
+        # If input is a raw dictionary, list of dicts, or unparsed payload, use attached extractor
+        if isinstance(input_sequence, (dict, list)) and self.extractor is not None:
+            if isinstance(input_sequence, dict):
+                input_data = [input_sequence]
+            else:
+                input_data = input_sequence
+            if len(input_data) > 0 and isinstance(input_data[0], (dict, str)):
+                seq_np = self.extractor.extract(input_data)
+                return self.pipeline.predict(seq_np)
+
         return self.pipeline.predict(input_sequence)
 
     def train_step(self, batch_data: Any) -> float:

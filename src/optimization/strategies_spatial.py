@@ -21,20 +21,19 @@
 """
 Optuna Strategies for the Cartographer Agent (Spatial Alignment).
 
-Training Method: Self-supervised via Synthetic Mutations.
-    1. Extract random sub-graphs from the real .net.xml.gz map
-    2. Create "mutant" copies with noise (shifted coords, removed edges)
-    3. Train the SinkhornCrossAttention to recover the original alignment
-
-Follows the same pattern as strategies_flow.py.
+Adheres strictly to SOLID:
+- Single Responsibility Principle (SRP): Isolates hyperparameter search and
+  convergence orchestration; delegates sampling to BfsGraphSampler, mutation
+  to SpatialGraphMutator, and neural training to CartographerTrainer.
+- Open/Closed Principle (OCP): Components (sampler, mutator, trainer) are injectable
+  and extensible without modifying this orchestrator.
+- Dependency Inversion Principle (DIP): Relies on IGraphSampler, ISpatialGraphMutator,
+  and ICartographerTrainer protocols.
 """
 
-import random
 import logging
 import torch
-import torch.nn as nn
-from typing import Any, List, Tuple
-from torch.amp import autocast, GradScaler
+from typing import Any, List, Tuple, Optional, Callable
 
 try:
     from torch_geometric.data import Data
@@ -44,7 +43,11 @@ except ImportError:
 
 from src.models.sinkhorn_cross_attention import SinkhornCrossAttention
 from src.services.line_graph_builder import LineGraphBuilder
+from src.services.graph_sampler import BfsGraphSampler
+from src.services.spatial_graph_mutator import SpatialGraphMutator
+from src.trainer.cartographer_trainer import CartographerTrainer
 from src.domain.entities import MapEdge, MapNode
+from src.domain.model_contracts import IGraphSampler, ISpatialGraphMutator
 from src.utils.convergence_tracker import MarginalConvergenceTracker
 
 logger = logging.getLogger("Synapse.Strategies.Spatial")
@@ -61,6 +64,9 @@ class SpatialStrategies:
         max_epochs: int = 50,
         min_epochs: int = 4,
         n_subgraphs_per_epoch: int = 10,
+        sampler: Optional[IGraphSampler] = None,
+        mutator: Optional[ISpatialGraphMutator] = None,
+        trainer_factory: Optional[Callable[[SinkhornCrossAttention, float, torch.device], CartographerTrainer]] = None,
     ) -> float:
         """
         Optuna trial for the SinkhornCrossAttention model with Dynamic Marginal Convergence.
@@ -72,6 +78,9 @@ class SpatialStrategies:
             max_epochs: Max safety epochs per trial.
             min_epochs: Min warm-up epochs.
             n_subgraphs_per_epoch: Random subgraphs per epoch.
+            sampler: Optional injected graph sampler (defaults to BfsGraphSampler).
+            mutator: Optional injected graph mutator (defaults to SpatialGraphMutator).
+            trainer_factory: Optional factory callable for trainer (DIP).
 
         Returns:
             Final best loss (lower is better).
@@ -80,12 +89,16 @@ class SpatialStrategies:
             logger.error("[Spatial] PyTorch Geometric not available.")
             return float('inf')
 
-        edges = graph_data.get('edges', [])
-        nodes = graph_data.get('nodes', [])
+        edges = graph_data.get('edges', []) if isinstance(graph_data, dict) else getattr(graph_data, 'edges', [])
+        nodes = graph_data.get('nodes', []) if isinstance(graph_data, dict) else getattr(graph_data, 'nodes', [])
 
         if len(edges) < 10:
             logger.error(f"[Spatial] Not enough edges: {len(edges)}")
             return float('inf')
+
+        # Dependency resolution (Default to solid services if not injected)
+        graph_sampler = sampler or BfsGraphSampler()
+        graph_mutator = mutator or SpatialGraphMutator()
 
         # ── Hyperparameters (Optuna Search Space) ──
         d_model = trial.suggest_categorical("cart_d_model", [32, 64, 128])
@@ -103,7 +116,7 @@ class SpatialStrategies:
             f"sinkhorn={sinkhorn_iters}, lr={lr:.5f}"
         )
 
-        # ── Model ──
+        # ── Model & Trainer Instantiation (DIP) ──
         model = SinkhornCrossAttention(
             raw_dim=11,
             d_model=d_model,
@@ -114,8 +127,10 @@ class SpatialStrategies:
             temperature=temperature,
         ).to(device)
 
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-        scaler = GradScaler(device=str(device))
+        if trainer_factory is not None:
+            trainer = trainer_factory(model, lr, device)
+        else:
+            trainer = CartographerTrainer(model=model, learning_rate=lr, device=device)
 
         # ── Dynamic Training Loop ──
         tracker = MarginalConvergenceTracker(
@@ -128,13 +143,12 @@ class SpatialStrategies:
 
         try:
             for epoch in range(tracker.max_epochs):
-                model.train()
                 batch_losses: List[float] = []
 
                 for _ in range(n_subgraphs_per_epoch):
                     try:
-                        # 1. Random Sub-Graph
-                        sub_edges, sub_nodes = SpatialStrategies._random_subgraph(
+                        # 1. Connected Subgraph Extraction (Delegated to IGraphSampler)
+                        sub_edges, sub_nodes = graph_sampler.sample_subgraph(
                             edges, nodes, min_edges=5, max_edges=30
                         )
                         if len(sub_edges) < 3:
@@ -145,8 +159,8 @@ class SpatialStrategies:
                         if source is None:
                             continue
 
-                        # 3. Mutant
-                        mut_edges, perm = SpatialStrategies._create_mutation(
+                        # 3. Mutant Synthesis (Delegated to ISpatialGraphMutator)
+                        mut_edges, perm = graph_mutator.mutate(
                             sub_edges, noise_scale=noise_scale
                         )
                         mutant = LineGraphBuilder.build_from_edges(mut_edges, sub_nodes)
@@ -160,21 +174,9 @@ class SpatialStrategies:
                             if src_idx < n_s and mut_idx < n_m:
                                 gt[src_idx, mut_idx] = 1.0
 
-                        source = source.to(device)
-                        mutant = mutant.to(device)
-                        gt = gt.to(device)
-
-                        # 5. Forward + Loss
-                        optimizer.zero_grad()
-                        with autocast(device_type=device.type, enabled=(device.type == 'cuda')):
-                            predicted = model(source, mutant)
-                            loss = SinkhornCrossAttention.alignment_loss(predicted, gt)
-
-                        scaler.scale(loss).backward()
-                        scaler.step(optimizer)
-                        scaler.update()
-
-                        batch_losses.append(loss.item())
+                        # 5. Forward + Loss + Optimization (Delegated to ICartographerTrainer)
+                        loss_val = trainer.train_step(source, mutant, gt)
+                        batch_losses.append(loss_val)
 
                     except Exception as e:
                         logger.debug(f"[Spatial] Subgraph error: {e}")
@@ -213,7 +215,7 @@ class SpatialStrategies:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-    # ─── Synthetic Data ───────────────────────────────────────────────────
+    # ─── Backward-compatible delegates ───────────────────────────────────────
 
     @staticmethod
     def _random_subgraph(
@@ -222,44 +224,8 @@ class SpatialStrategies:
         min_edges: int = 5,
         max_edges: int = 30,
     ) -> Tuple[List[MapEdge], List[MapNode]]:
-        """BFS expansion from a random seed edge."""
-        if len(edges) <= min_edges:
-            return edges, nodes
-
-        junction_map: dict = {}
-        for e in edges:
-            junction_map.setdefault(e.from_node, []).append(e)
-            junction_map.setdefault(e.to_node, []).append(e)
-
-        target = random.randint(min_edges, min(max_edges, len(edges)))
-        seed = random.choice(edges)
-
-        visited = {seed.id}
-        result = [seed]
-        frontier = {seed.from_node, seed.to_node}
-
-        while len(result) < target and frontier:
-            junction = random.choice(list(frontier))
-            frontier.discard(junction)
-
-            for neighbor in junction_map.get(junction, []):
-                if neighbor.id not in visited:
-                    visited.add(neighbor.id)
-                    result.append(neighbor)
-                    frontier.add(neighbor.from_node)
-                    frontier.add(neighbor.to_node)
-                    if len(result) >= target:
-                        break
-
-        node_ids = set()
-        for e in result:
-            node_ids.add(e.from_node)
-            node_ids.add(e.to_node)
-
-        node_lookup = {n.id: n for n in nodes}
-        result_nodes = [node_lookup[nid] for nid in node_ids if nid in node_lookup]
-
-        return result, result_nodes
+        """Delegates to BfsGraphSampler for backward compatibility."""
+        return BfsGraphSampler().sample_subgraph(edges, nodes, min_edges, max_edges)
 
     @staticmethod
     def _create_mutation(
@@ -267,35 +233,5 @@ class SpatialStrategies:
         noise_scale: float = 20.0,
         drop_prob: float = 0.1,
     ) -> Tuple[List[MapEdge], List[int]]:
-        """Create noisy mutant: jitter + deletion + shuffle."""
-        indices = list(range(len(edges)))
-
-        # Deletion
-        surviving = []
-        for idx in indices:
-            if random.random() > drop_prob or len(surviving) < 3:
-                surviving.append(idx)
-
-        # Shuffle
-        random.shuffle(surviving)
-
-        # Noisy copies
-        mutants = []
-        for orig_idx in surviving:
-            e = edges[orig_idx]
-            noisy_shape = [
-                (px + random.gauss(0, noise_scale), py + random.gauss(0, noise_scale))
-                for px, py in e.shape
-            ]
-            m = MapEdge(
-                id=f"mut_{e.id}",
-                from_node=e.from_node,
-                to_node=e.to_node,
-                shape=noisy_shape,
-                weight=e.weight,
-            )
-            m._speed = getattr(e, '_speed', 13.89)
-            m._num_lanes = getattr(e, '_num_lanes', 1)
-            mutants.append(m)
-
-        return mutants, surviving
+        """Delegates to SpatialGraphMutator for backward compatibility."""
+        return SpatialGraphMutator().mutate(edges, noise_scale, drop_prob)

@@ -1,36 +1,36 @@
-# 02. UI Architecture & Frontend
+# 02. UI Architecture & Modern Frontend (Tauri v2 + React)
 
-Located in the `ui/` directory, the SYNAPSE frontend is a highly responsive **PyQt6** application. Because it interfaces directly with a heavy, multi-threaded PyTorch backend, strict structural patterns are required to prevent the UI from freezing.
+Located in the `ui/` directory, the SYNAPSE frontend is a high-performance **Tauri v2 + React 18 + TypeScript + Tailwind CSS** desktop application.
 
-## The View-Controller Delegation (`MainWindow`)
+It communicates with the heavy, multi-threaded PyTorch backend via **Zero-Network-Port Piped STDIO IPC**, guaranteeing that zero TCP/HTTP ports are opened on the host system.
 
-The `MainWindow` (`ui/main_window.py`) does **not** contain direct layout code or widget instantiation for the bulk of the application. It acts purely as a structural foundation.
+---
 
-It delegates responsibilities to specialized components:
-- **`CentralTabs`**: Manages the main workspace (Map View, Analytics, System Config).
-- **`MainMenu`**: Manages the top menu bar.
-- **`DockManager`**: Controls the floating tool windows (Log Console, Sensor Inspector).
-- **`DialogHandler`**: Centralizes the logic for opening popups and configuration windows, preventing memory leaks from un-garbage-collected Qt dialogs.
+## 1. Structure & Layout Components
 
-## The Signal Router Matrix
+The frontend is structured in `ui/src/`:
+- **`Header`** (`ui/src/components/layout/Header.tsx`): Manages top navigation, real-time operating phase indicators, IPC pipe heartbeat, and dynamic PT-BR / EN-US language switching.
+- **`Sidebar`** (`ui/src/components/layout/Sidebar.tsx`): Controls the state machine lifecycle (Optimization, Offline Bootstrap, Online HFT-Link Operation) and lists active data sources with Local/Global origin toggling.
+- **`SumoMapCanvas`** (`ui/src/components/map/SumoMapCanvas.tsx`): Hardware-accelerated 2D Canvas/WebGL road network visualizer supporting smooth pan, zoom, traffic light highlights, and real-time speed heatmaps.
+- **`LiveDashboard`** (`ui/src/components/dashboard/LiveDashboard.tsx`): Real-time telemetry powered by **Apache ECharts** (velocity, occupancy, and packet throughput at 60 FPS).
+- **`XaiInspector`** (`ui/src/components/xai/XaiInspector.tsx`): Explainable AI & Safety Auditor panel displaying physical verification verdicts (`SAFE` vs `VETO`) and temporal attribution bars ($t-11$ to $t_0$).
+- **`LogConsole`** (`ui/src/components/layout/LogConsole.tsx`): Retractable terminal dock for real-time system events with log-level filtering.
 
-One of the most complex problems in bridging PyQt6 and PyTorch is thread safety. PyTorch tensors are manipulated on background threads, but PyQt6 **requires** all UI updates to happen exclusively on the Main Thread.
+---
 
-SYNAPSE solves this via the **`SignalRouter`** (`ui/handlers/signal_router.py`):
-1. When the `InferenceEngine` finishes a cycle, it emits `engine_global_results`.
-2. This signal crosses the thread boundary and is caught by the `MainController`.
-3. The `MainController` proxies it to the `SignalRouter`.
-4. The `SignalRouter` safely unpacks the payload (stripping out heavy CUDA tensors and keeping only the numpy visualization arrays) and routes it to the specific UI widgets (like the Map renderer or the live charts).
+## 2. Zero-Port IPC Bridge (`Piped STDIO`)
 
-This guarantees that a slow screen repaint will **never** cause the Neural Engine to miss its 1-second real-time deadline.
+Communication between Tauri (Rust) and SYNAPSE Core (Python):
+1. **Rust Sidecar**: Tauri spawns `python3 -m src.ipc.stdio_daemon` as a background child process.
+2. **Streaming Events (Python $\rightarrow$ React)**: Domain signals emitted by `MainController` / `InferenceEngine` are serialized as newline-delimited JSON envelopes (`IpcEvent`) on `sys.stdout`. Rust streams them directly to React via `app_handle.emit("synapse:<event>", payload)`.
+3. **User Commands (React $\rightarrow$ Python)**: React invokes `send_synapse_command(action, payload)`. Rust writes the JSON line to `sys.stdin` of the Python process.
 
-## User Experience Subsystems
+---
 
-### TranslationManager (`ui/utilities/translation_manager.py`)
-SYNAPSE supports full i18n localization. Changing the language dynamically emits a `QEvent.Type.LanguageChange` event, which the `MainWindow` catches to recursively call `retranslate_ui()` down the entire widget tree without restarting the application.
+## 3. Internationalization (i18n)
 
-### ThemeManager (`ui/styles/theme_manager.py`)
-Supports dynamic Dark and Light modes by applying global `.qss` (Qt Style Sheets) at runtime.
+Localization is powered by `i18next` + `react-i18next` with structured JSON locale dictionaries:
+- `ui/src/i18n/locales/pt_BR.json` (Portuguese - Brazil)
+- `ui/src/i18n/locales/en_US.json` (English - US)
 
-### System Tray Integration
-Traffic management systems run 24/7. When the user closes the main window, SYNAPSE intercepts the `closeEvent` and hides the window to the OS System Tray. The neural pipeline continues processing and transmitting to CARINA completely headless. A context menu allows the user to restore the UI or explicitly quit.
+Language toggling is instantaneous without restarting the process.
