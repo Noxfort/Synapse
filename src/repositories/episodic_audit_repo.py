@@ -25,7 +25,7 @@ logger = logging.getLogger("Synapse.EpisodicAuditRepo")
 class EpisodicAuditRepository:
     """
     Repository for persisting physics-informed invariant violations (LWR / PINN residuals),
-    auditor vetoes, and legal-grade XAI verdicts from JuristAgent into PostgreSQL or SQLite.
+    auditor vetoes, and legal-grade XAI verdicts from JuristAgent into PostgreSQL.
     """
 
     def __init__(self, engine: 'DatabaseEngine', dictionary_repo: 'SensorDictionaryRepository'):

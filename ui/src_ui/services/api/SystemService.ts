@@ -89,45 +89,58 @@ export class SystemService {
     return await this.transport.invoke('get_network_info');
   }
 
+  private isFilePickerOpen = false;
+
   async pickFile(options?: {
     title?: string;
     filter?: string;
     filterName?: string;
     extensions?: string[];
   }): Promise<{ path: string | null; cancelled: boolean }> {
-    let extensions = options?.extensions;
-    let filterName = options?.filterName;
-
-    if (options?.filter) {
-      const parts = options.filter.split('|');
-      if (!filterName) {
-        filterName = parts[0]?.trim() || 'Arquivos';
-      }
-      if (!extensions && parts.length > 1) {
-        extensions = parts[1]
-          .trim()
-          .split(/\s+/)
-          .map((ext) => ext.replace(/^\*\./, '').replace(/^\./, ''))
-          .filter(Boolean);
-      }
+    if (this.isFilePickerOpen) {
+      console.warn('[SystemService] Diálogo de seleção de arquivo já está em aberto; ignorando chamada duplicada.');
+      return { path: null, cancelled: true };
     }
 
+    this.isFilePickerOpen = true;
+
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const res = await invoke<string | null>('pick_file_dialog', {
-        title: options?.title || 'Selecionar Arquivo',
-        filterName: filterName || 'Arquivos',
-        filterExtensions: extensions && extensions.length > 0 ? extensions : ['parquet'],
-      });
-      return { path: res, cancelled: res === null };
-    } catch (err) {
-      console.warn('[SystemService] Falha ao invocar Tauri pick_file_dialog, tentando IPC:', err);
-      try {
-        return await this.transport.invoke('pick_file', options || {});
-      } catch (ipcErr) {
-        console.warn('[SystemService] Falha ao invocar pick_file via IPC:', ipcErr);
-        return { path: null, cancelled: false };
+      let extensions = options?.extensions;
+      let filterName = options?.filterName;
+
+      if (options?.filter) {
+        const parts = options.filter.split('|');
+        if (!filterName) {
+          filterName = parts[0]?.trim() || 'Arquivos';
+        }
+        if (!extensions && parts.length > 1) {
+          extensions = parts[1]
+            .trim()
+            .split(/\s+/)
+            .map((ext) => ext.replace(/^\*\./, '').replace(/^\./, ''))
+            .filter(Boolean);
+        }
       }
+
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const res = await invoke<string | null>('pick_file_dialog', {
+          title: options?.title || 'Selecionar Arquivo',
+          filterName: filterName || 'Arquivos',
+          filterExtensions: extensions && extensions.length > 0 ? extensions : ['parquet'],
+        });
+        return { path: res, cancelled: res === null };
+      } catch (err) {
+        console.warn('[SystemService] Falha ao invocar Tauri pick_file_dialog, tentando IPC:', err);
+        try {
+          return await this.transport.invoke('pick_file', options || {});
+        } catch (ipcErr) {
+          console.warn('[SystemService] Falha ao invocar pick_file via IPC:', ipcErr);
+          return { path: null, cancelled: true };
+        }
+      }
+    } finally {
+      this.isFilePickerOpen = false;
     }
   }
 }

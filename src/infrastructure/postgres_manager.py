@@ -58,12 +58,12 @@ class PostgresWorker(QObject):
             
             # Save validated settings to config/settings.ini
             try:
-                from src.database.db_engine import DatabaseEngine
+                from src.database.db_settings_manager import DatabaseSettingsManager
                 pg_cfg = dict(config)
                 pg_cfg["db_type"] = "postgres"
                 pg_cfg["schema"] = schema
-                engine = DatabaseEngine(custom_config=pg_cfg)
-                engine.save_settings_to_ini(pg_cfg)
+                settings_mgr = DatabaseSettingsManager()
+                settings_mgr.save_database_settings(pg_cfg)
             except Exception as se:
                 logger.warning(f"Could not persist settings.ini: {se}")
 

@@ -1,0 +1,218 @@
+{
+  "systemVersion": "SYNAPSE Core v2.0 Enterprise (Módulo de Controle Semafórico Adaptativo em Malha Arterial)",
+  "defaultAttribution": {
+    "cityHall": "PREFEITURA DO MUNICÍPIO DE SÃO PAULO",
+    "department": "SECRETARIA MUNICIPAL DE MOBILIDADE URBANA E TRÂNSITO (SMT)",
+    "authorityName": "Gabriel Moraes",
+    "authorityRole": "Autoridade Municipal de Trânsito / Secretário de Mobilidade",
+    "registrationNumber": "Matrícula Funcional nº 84.102-3 • Portaria de Nomeação SMT nº 142/2025",
+    "processPrefix": "PA-SMT-2026/"
+  },
+  "auditObjective": "Realizar a auditoria técnica e verificação de conformidade na operação semafórica adaptativa em tempo real na malha arterial do Corredor Paulista, fiscalizando o cumprimento dos tempos mínimos de segurança do CONTRAN, o dimensionamento de saturação e a fundamentação da reprogramação dinâmica de tempos de verde.",
+  "observedTrafficDiagnosis": "Durante a supervisão operacional no intervalo de pico das 18h00, constatou-se a formação de onda de choque de retardo a montante no eixo arterial da Av. Paulista, com grau de saturação atingindo x = 0,92 e taxa de ocupação dos detectores em 89,2%. A velocidade média caiu para 12,4 km/h, caracterizando regime de fluxo forçado e iminência de bloqueio das interseções transversais na Rua Augusta e Alameda Santos.",
+  "adaptiveActionExecuted": "Execução da intervenção semafórica dinâmica pelo sistema adaptativo, com aplicação de extensão de 15 segundos no tempo de verde efetivo do Estágio 1 (Av. Paulista), reescalonamento da defasagem (offset) nas interseções adjacentes e manutenção inviolável dos tempos de segurança: tempo de amarelo de 4,0 segundos e tempo de pedestre de 18,0 segundos.",
+  "location": {
+    "corridorName": "Corredor Arterial Av. Paulista • Eixo de Conexão Consolação / Augusta / Rebouças",
+    "jurisdiction": "Município de São Paulo / Área Central / Gerência de Operações Centro",
+    "centralNodes": "18 Interseções Semafóricas Interconectadas (Nós Centrais: #48102, #48105, #39201, #48099)",
+    "geographicBounds": "Coordenadas Centrais: Latitude -23.558712, Longitude -46.660145",
+    "nominalNetworkCapacity": "Capacidade Nominal Total da Malha: 28.000 veíc/h (Capacidade de Saturação por Faixa: 1.800 veíc/h)",
+    "baselineSignalPlan": "Plano Semafórico Nominal Coordenado de 120 segundos (Tempo de Ciclo Base: Verde Principal 55s, Secundário 35s, Amarelo 4,0s, Vermelho Geral 2,0s)"
+  },
+  "safetyInterventions": [
+    {
+      "id": "INT-SEG-01",
+      "timeRecorded": "18:14:22",
+      "junction": "Av. Rebouças x Av. Brasil",
+      "equipmentId": "RAD-SP-REBOUCAS-03",
+      "irregularityDetected": "Discrepância instrumental de leitura pontual de velocidade (ruído instantâneo no feixe Doppler).",
+      "trafficSafetyRisk": "Risco de falso acionamento de plano de retenção semafórica emergencial.",
+      "contranStandardViolated": "Critério de Confiabilidade Metrológica da Resolução CONTRAN nº 798/2020.",
+      "correctiveGuardrail": "Filtro de consistência física rejeitou a leitura espúria e manteve a programação semafórica coordenada.",
+      "finalState": "INTERVENÇÃO HOMOLOGADA"
+    },
+    {
+      "id": "INT-SEG-02",
+      "timeRecorded": "18:22:45",
+      "junction": "Av. Paulista x Rua Augusta",
+      "equipmentId": "CONTROLADOR_ATU_PAULISTA",
+      "irregularityDetected": "Tentativa de corte prematuro de tempo de verde pelo otimizador de fluxo durante travessia em andamento.",
+      "trafficSafetyRisk": "Redução do tempo de travessia para pedestres abaixo do limiar mínimo regulamentar.",
+      "contranStandardViolated": "Item 4.3 do Volume V do Manual Brasileiro de Sinalização de Trânsito (Tempo de Pedestre Mínimo).",
+      "correctiveGuardrail": "Trava rígida de segurança impôs o tempo mínimo inviolável de 18 segundos de travessia (velocidade de 1,0 m/s).",
+      "finalState": "PARÂMETRO RETIFICADO"
+    },
+    {
+      "id": "INT-SEG-03",
+      "timeRecorded": "18:31:10",
+      "junction": "Rua da Consolação x Av. Paulista",
+      "equipmentId": "DET-SP-CONSOLACAO-04",
+      "irregularityDetected": "Atraso na liberação da fila transversal em virtude de refluxo de veículos bloqueando a interseção.",
+      "trafficSafetyRisk": "Fechamento de cruzamento e infração do Art. 182 do Código de Trânsito Brasileiro.",
+      "contranStandardViolated": "Art. 80 do CTB e Diretrizes de Coordenação Semafórica.",
+      "correctiveGuardrail": "Extensão temporária do tempo de vermelho de limpeza (All-Red) de 2,0s para 3,5s para desobstrução da caixa do cruzamento.",
+      "finalState": "OPERANDO EM SEGURANÇA"
+    }
+  ],
+  "quesitos": [
+    {
+      "number": 1,
+      "question": "Os equipamentos de detecção veicular e controladores semafóricos da malha encontram-se aferidos e operando regularmente segundo normas do INMETRO?",
+      "answer": "SIM",
+      "technicalJustification": "A fiscalização dos registros metrológicos comprovou que todos os laços indutivos, radares Doppler e controladores ATU possuem laudos válidos de calibração, operando com índice de disponibilidade de 98,4% e sem falhas de hardware no período auditado."
+    },
+    {
+      "number": 2,
+      "question": "A intervenção do sistema adaptativo violou qualquer tempo mínimo de segurança viária estabelecido pelas resoluções do CONTRAN (tempo de amarelo, vermelho geral ou tempo de pedestres)?",
+      "answer": "NÃO",
+      "technicalJustification": "Todos os tempos de transição atenderam rigorosamente às normas: tempo de amarelo mantido fixo em 4,0s (superior ao tempo cinemático de 3,32s de Gazis), vermelho de limpeza em 2,0s e tempo de pedestre blindado em 18,0s, correspondendo à velocidade de travessia de 1,0 m/s para acessibilidade universal (NBR 9050)."
+    },
+    {
+      "number": 3,
+      "question": "Houve registro de anomalias operacionais ou tentativas de reprogramação inadequada que tenham exigido atuação corretiva?",
+      "answer": "SIM",
+      "technicalJustification": "Foram registradas 3 intervenções de segurança (uma leitura espúria de radar, uma tentativa de corte precoce de fase e um refluxo de caixa de cruzamento). Em todos os casos, as travas de segurança regulamentares atuaram imediatamente, impedindo a ocorrência de situações de risco aos usuários da via."
+    },
+    {
+      "number": 4,
+      "question": "A reprogramação dinâmica semafórica foi eficaz para mitigar a retenção e reduzir o atraso total de viagem no corredor auditado?",
+      "answer": "SIM",
+      "technicalJustification": "A extensão do tempo de verde principal combinada com a sincronização de defasagem aumentou a capacidade de escoamento em 22,4%, reduzindo a densidade de saturação de 89,2% para 67,8% em 4 ciclos subsequentes e evitando o travamento das interseções transversais."
+    },
+    {
+      "number": 5,
+      "question": "A decisão técnica de alteração de tempos semafóricos encontra-se formalmente motivada e fundamentada em variáveis de tráfego auditáveis?",
+      "answer": "SIM",
+      "technicalJustification": "O ato decisório automatizado apoia-se em memorial de cálculo de engenharia de tráfego (Teoria de Filas de Webster, Método do Highway Capacity Manual e Conservação Hidrodinâmica de Lighthill-Whitham-Richards), satisfazendo a exigência de motivação dos atos administrativos (Art. 50 da Lei Federal nº 9.784/1999) e de transparência (Art. 20 da Lei Federal nº 13.709/2018)."
+    }
+  ],
+  "legalFraming": [
+    {
+      "article": "Art. 1º, § 2º da Lei Federal nº 9.503/1997 (Código de Trânsito Brasileiro - CTB)",
+      "desc": "Estabelece que o trânsito em condições seguras é um direito de todos e dever prioritário dos órgãos do Sistema Nacional de Trânsito."
+    },
+    {
+      "article": "Art. 24, incisos II e III da Lei Federal nº 9.503/1997 (CTB)",
+      "desc": "Atribui expressamente ao órgão municipal executivo de trânsito a competência de planejar, projetar, regulamentar e operar o trânsito de veículos e pedestres."
+    },
+    {
+      "article": "Resolução CONTRAN nº 995/2023 (Sinalização Semafórica Regulamentar)",
+      "desc": "Regulamenta os padrões técnicos, dimensionamentos de tempos mínimos de segurança, tempos de amarelo de transição e tempos de travessia para pedestres."
+    },
+    {
+      "article": "Resolução CONTRAN nº 798/2020 (Critérios Técnicos de Medidores de Velocidade)",
+      "desc": "Define os requisitos de confiabilidade metrológica, registro e calibração periódica por órgãos acreditados pelo INMETRO para instrumentos fiscalizatórios."
+    },
+    {
+      "article": "Art. 50 da Lei Federal nº 9.784/1999 (Motivação Obrigatória dos Atos Administrativos)",
+      "desc": "Exige a fundamentação expressa, fática e jurídica de decisões estatais que afetem direitos e interesses difusos da coletividade."
+    },
+    {
+      "article": "Art. 20 da Lei Federal nº 13.709/2018 (Lei Geral de Proteção de Dados - LGPD)",
+      "desc": "Assegura o direito à revisão e explicação de decisões tomadas unicamente com base em tratamento automatizado de dados (Explicabilidade e IA Transparente)."
+    }
+  ],
+  "references": [
+    "ASSOCIAÇÃO BRASILEIRA DE NORMAS TÉCNICAS. NBR 10719: Informação e documentação — Relatório técnico e/ou científico — Apresentação. Rio de Janeiro: ABNT, 2015.",
+    "ASSOCIAÇÃO BRASILEIRA DE NORMAS TÉCNICAS. NBR 14724: Informação e documentação — Trabalhos acadêmicos — Apresentação. Rio de Janeiro: ABNT, 2011.",
+    "BRASIL. Lei nº 9.503, de 23 de setembro de 1997. Institui o Código de Trânsito Brasileiro. Diário Oficial da União, Brasília, DF, 24 set. 1997.",
+    "CONTRAN. Manual Brasileiro de Sinalização de Trânsito — Volume V: Sinalização Semafórica. Conselho Nacional de Trânsito, Brasília, 2022.",
+    "TRANSPORTATION RESEARCH BOARD. Highway Capacity Manual (HCM 7th Edition): A Guide for Multimodal Mobility Analysis. Washington, D.C.: The National Academies Press, 2022.",
+    "WEBSTER, F. V. Traffic Signal Settings. Road Research Technical Paper No. 39. London: Her Majesty's Stationery Office (HMSO), 1958.",
+    "LIGHTHILL, M. J.; WHITHAM, G. B. On Kinematic Waves II. A Theory of Traffic Flow on Long Crowded Roads. Proceedings of the Royal Society of London, Series A, v. 229, p. 317-345, 1955."
+  ],
+  "operationalSupervision": "Supervisão da Central de Controle Operacional (CCO): Turno Operacional Noturno 17h00 - 23h00 • Eng. Plantonista CREA-SP nº 506.192.834-1 • Telemetria contínua com latência de resposta de 42ms.",
+  "digitalCertification": "DOCUMENTO ASSINADO DIGITALMENTE nos termos da Medida Provisória nº 2.200-2/2001 e do Decreto Municipal nº 58.056/2018. Assinatura com carimbo do tempo criptográfico SHA-256 e certificado digital ICP-Brasil emitido pela Autoridade Certificadora Municipal.",
+  "counterfactualAnalysis": "A intervenção semafórica dinâmica seria dispensada (mantendo-se o plano semafórico estático nominal de 120s) se, e somente se, o grau de saturação na aproximação principal regredisse para x < 0,65 (valor observado: x = 0,92) OU a velocidade média na via arterial superasse 30,0 km/h (velocidade observada: 12,4 km/h).",
+  "fallbackSensors": [
+    {
+      "id": "DET-SP-PAULISTA-01",
+      "junction": "Av. Paulista x Rua Augusta (Aproximação Sul)",
+      "equipmentType": "Detector Laço Indutivo Duplo Eletromagnético",
+      "measuredSpeed": "12,4 km/h",
+      "measuredFlow": "1.450 veíc/h",
+      "saturationDegree": "0,92 (Regime Forçado)",
+      "occupancyRate": "89,2%",
+      "inmetroReport": "Laudo INMETRO nº 8941/2025 (Válido)",
+      "operationalStatus": "Operação Nominal"
+    },
+    {
+      "id": "DET-SP-AUGUSTA-02",
+      "junction": "Rua Augusta x Alameda Santos",
+      "equipmentType": "Detector Não-Intrusivo / Visão Computacional OCR",
+      "measuredSpeed": "18,1 km/h",
+      "measuredFlow": "680 veíc/h",
+      "saturationDegree": "0,48 (Fluxo Estável)",
+      "occupancyRate": "42,5%",
+      "inmetroReport": "Certificado de Aferição nº 7812/2025",
+      "operationalStatus": "Operação Nominal"
+    },
+    {
+      "id": "RAD-SP-REBOUCAS-03",
+      "junction": "Av. Rebouças x Av. Brasil",
+      "equipmentType": "Radar Doppler de Micro-ondas / Velocímetro",
+      "measuredSpeed": "34,2 km/h",
+      "measuredFlow": "2.100 veíc/h",
+      "saturationDegree": "0,74 (Próximo à Capacidade)",
+      "occupancyRate": "58,0%",
+      "inmetroReport": "Portaria INMETRO/SUR-SP nº 9934/2025",
+      "operationalStatus": "Operação Nominal"
+    },
+    {
+      "id": "DET-SP-CONSOLACAO-04",
+      "junction": "Rua da Consolação x Av. Paulista",
+      "equipmentType": "Detector Laço Indutivo em Placa de Trânsito",
+      "measuredSpeed": "14,0 km/h",
+      "measuredFlow": "1.120 veíc/h",
+      "saturationDegree": "0,84 (Regime Saturado)",
+      "occupancyRate": "76,0%",
+      "inmetroReport": "Laudo de Calibração nº 4512/2025",
+      "operationalStatus": "Operação Nominal"
+    },
+    {
+      "id": "DET-SP-9DEJULHO-05",
+      "junction": "Av. 9 de Julho x Rua Peixoto Gomide",
+      "equipmentType": "Detector Eletromagnético Volumétrico",
+      "measuredSpeed": "22,6 km/h",
+      "measuredFlow": "1.890 veíc/h",
+      "saturationDegree": "0,66 (Fluxo Regular)",
+      "occupancyRate": "61,4%",
+      "inmetroReport": "Laudo INMETRO nº 6541/2025 (Válido)",
+      "operationalStatus": "Operação Nominal"
+    }
+  ],
+  "fallbackAttributions": [
+    {
+      "parameterName": "Grau de Saturação da Aproximação Sul (Av. Paulista x Augusta)",
+      "junctionLocation": "Av. Paulista x Rua Augusta",
+      "detectorId": "DET-SP-PAULISTA-01",
+      "causalWeightPercent": 42.5,
+      "gradientDirection": "Positiva (+)",
+      "trafficImpactAnalysis": "Fator preponderante no acúmulo de fila veicular e necessidade de extensão do tempo de verde."
+    },
+    {
+      "parameterName": "Taxa de Ocupação e Propagação de Fila (Av. Rebouças)",
+      "junctionLocation": "Av. Rebouças x Av. Brasil",
+      "detectorId": "RAD-SP-REBOUCAS-03",
+      "causalWeightPercent": 26.8,
+      "gradientDirection": "Positiva (+)",
+      "trafficImpactAnalysis": "Demanda de escoamento contínuo para evitar bloqueio da caixa de cruzamento a montante."
+    },
+    {
+      "parameterName": "Capacidade Ociosa na Aproximação Transversal (Alameda Santos)",
+      "junctionLocation": "Rua Augusta x Alameda Santos",
+      "detectorId": "DET-SP-AUGUSTA-02",
+      "causalWeightPercent": 18.4,
+      "gradientDirection": "Negativa (-)",
+      "trafficImpactAnalysis": "Grau de saturação reduzido (x = 0,48) autorizando remanejamento do tempo de ciclo a favor do eixo principal."
+    },
+    {
+      "parameterName": "Velocidade Média Espacial no Corredor de Escoamento",
+      "junctionLocation": "Rua da Consolação x Av. Paulista",
+      "detectorId": "DET-SP-CONSOLACAO-04",
+      "causalWeightPercent": 12.3,
+      "gradientDirection": "Positiva (+)",
+      "trafficImpactAnalysis": "Velocidade reduzida para 14,0 km/h indicando dissipação lenta da cauda da fila."
+    }
+  ]
+}

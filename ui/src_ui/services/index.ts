@@ -20,3 +20,4 @@
 
 export * from './transport';
 export * from './api';
+export * from './bridge';

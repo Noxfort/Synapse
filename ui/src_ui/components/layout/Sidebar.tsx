@@ -31,9 +31,11 @@ import {
   PlusCircle,
   Crosshair,
   MoreVertical,
-  ArrowRight
+  ArrowRight,
+  Lock,
+  Check
 } from 'lucide-react';
-import { useSystemStore, useSensorsStore, useTopologyStore } from '../../stores';
+import { useSystemStore, useSensorsStore, useTopologyStore, useSecurityStore, useEtlStore } from '../../stores';
 import { systemService, sensorService } from '../../services/api';
 import { SystemPhase } from '../../types/system';
 
@@ -49,31 +51,66 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const { t } = useTranslation();
   const phase = useSystemStore((s) => s.phase);
   const sources = useSensorsStore((s) => s.sources);
+  const mapLoaded = useTopologyStore((s) => s.mapLoaded || s.nodes.length > 0);
+  const importProgress = useEtlStore((s) => s.importProgress);
   const setAssociatingSourceId = useTopologyStore((s) => s.setAssociatingSourceId);
+  const requestAuth = useSecurityStore((s) => s.requestAuth);
 
   const [activeMenuSourceId, setActiveMenuSourceId] = useState<string | null>(null);
 
+  // Prerequisites for starting Phase 0 (Optimization): Map, Parquet, and Sensors
+  const hasMap = mapLoaded;
+  const hasParquet = importProgress.progress === 100 || sources.some(
+    (s) => s.connection_string?.toLowerCase().endsWith('.parquet') || s.source_type === 'Parquet' || s.id === 'historical_base'
+  );
+  const hasSensors = sources.some(
+    (s) =>
+      s.source_type === 'Parquet' ||
+      s.connection_string?.toLowerCase().endsWith('.parquet') ||
+      s.id === 'historical_base' ||
+      (s.source_type !== 'SUMO Network' && s.id !== 'map_main')
+  );
+
+  const isOptPrerequisitesMet = hasMap && hasParquet && hasSensors;
+  const isStartOptLocked = phase === 'IDLE_OPTIMIZATION' && !isOptPrerequisitesMet;
+
   const handleControlAction = async () => {
-    switch (phase) {
-      case 'IDLE_OPTIMIZATION':
-        await systemService.startOptimization();
-        break;
-      case 'RUNNING_OPTIMIZATION':
-        await systemService.stopOptimization();
-        break;
-      case 'IDLE_OFFLINE':
-        await systemService.startOfflineBootstrap();
-        break;
-      case 'RUNNING_OFFLINE':
-        await systemService.stopOfflineBootstrap();
-        break;
-      case 'IDLE_ONLINE':
-        await systemService.startOnlineOperation();
-        break;
-      case 'RUNNING_ONLINE':
-        await systemService.stopOnlineOperation();
-        break;
-    }
+    if (isStartOptLocked) return;
+
+    const executeAction = async () => {
+      switch (phase) {
+        case 'IDLE_OPTIMIZATION':
+          await systemService.startOptimization();
+          break;
+        case 'RUNNING_OPTIMIZATION':
+          await systemService.stopOptimization();
+          break;
+        case 'IDLE_OFFLINE':
+          await systemService.startOfflineBootstrap();
+          break;
+        case 'RUNNING_OFFLINE':
+          await systemService.stopOfflineBootstrap();
+          break;
+        case 'IDLE_ONLINE':
+          await systemService.startOnlineOperation();
+          break;
+        case 'RUNNING_ONLINE':
+          await systemService.stopOnlineOperation();
+          break;
+      }
+    };
+
+    // Sensitive control actions are guarded by the Security Layer
+    requestAuth(executeAction);
+  };
+
+  const getOptLockTooltip = () => {
+    if (!isStartOptLocked) return undefined;
+    const missing: string[] = [];
+    if (!hasMap) missing.push('Mapa');
+    if (!hasParquet) missing.push('Parquet');
+    if (!hasSensors) missing.push('Sensores');
+    return `Pendente: ${missing.join(', ')}`;
   };
 
   const getButtonConfig = (currentPhase: SystemPhase) => {
@@ -81,9 +118,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       case 'IDLE_OPTIMIZATION':
         return {
           label: t('controls.btnStartOpt'),
-          icon: Play,
-          color: 'bg-primary-600 hover:bg-primary-500 shadow-primary-600/20 text-white',
+          icon: isStartOptLocked ? Lock : Play,
+          color: isStartOptLocked
+            ? 'bg-slate-200 dark:bg-surface border border-border text-slate-400 dark:text-slate-500 cursor-not-allowed opacity-60 shadow-none'
+            : 'bg-primary-600 hover:bg-primary-500 shadow-primary-600/20 text-white',
           active: false,
+          disabled: isStartOptLocked,
         };
       case 'RUNNING_OPTIMIZATION':
         return {
@@ -91,6 +131,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           icon: Square,
           color: 'bg-rose-600 hover:bg-rose-500 shadow-rose-600/20 text-white',
           active: true,
+          disabled: false,
         };
       case 'IDLE_OFFLINE':
         return {
@@ -98,6 +139,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           icon: Sparkles,
           color: 'bg-accent-cyan hover:bg-accent-cyan/90 text-slate-900 shadow-cyan-500/20',
           active: false,
+          disabled: false,
         };
       case 'RUNNING_OFFLINE':
         return {
@@ -105,6 +147,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           icon: Square,
           color: 'bg-rose-600 hover:bg-rose-500 shadow-rose-600/20 text-white',
           active: true,
+          disabled: false,
         };
       case 'IDLE_ONLINE':
         return {
@@ -112,6 +155,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           icon: Radio,
           color: 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-600/20 text-white',
           active: false,
+          disabled: false,
         };
       case 'RUNNING_ONLINE':
         return {
@@ -119,6 +163,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           icon: Square,
           color: 'bg-rose-600 hover:bg-rose-500 shadow-rose-600/20 text-white',
           active: true,
+          disabled: false,
         };
     }
   };
@@ -143,20 +188,78 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </span>
           </div>
 
-          <div className="p-3 bg-background/80 border border-border rounded-lg">
-            <p className="text-sm font-bold text-slate-900 dark:text-white tracking-tight">
-              {phase === 'IDLE_OPTIMIZATION' && t('controls.idleOptimization')}
-              {phase === 'RUNNING_OPTIMIZATION' && t('controls.runningOptimization')}
-              {phase === 'IDLE_OFFLINE' && t('controls.idleOffline')}
-              {phase === 'RUNNING_OFFLINE' && t('controls.runningOffline')}
-              {phase === 'IDLE_ONLINE' && t('controls.idleOnline')}
-              {phase === 'RUNNING_ONLINE' && t('controls.runningOnline')}
-            </p>
+          <div className="p-3 bg-background/80 border border-border rounded-lg space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-bold text-slate-900 dark:text-white tracking-tight">
+                {phase === 'IDLE_OPTIMIZATION' && t('controls.idleOptimization')}
+                {phase === 'RUNNING_OPTIMIZATION' && t('controls.runningOptimization')}
+                {phase === 'IDLE_OFFLINE' && t('controls.idleOffline')}
+                {phase === 'RUNNING_OFFLINE' && t('controls.runningOffline')}
+                {phase === 'IDLE_ONLINE' && t('controls.idleOnline')}
+                {phase === 'RUNNING_ONLINE' && t('controls.runningOnline')}
+              </p>
+              {phase === 'IDLE_OPTIMIZATION' && !isOptPrerequisitesMet && (
+                <span title={`Pré-requisitos pendentes:\n${!hasMap ? '• Mapa SUMO\n' : ''}${!hasParquet ? '• Base Parquet\n' : ''}${!hasSensors ? '• Sensores' : ''}`}>
+                  <Lock className="w-3.5 h-3.5 text-amber-500/80" />
+                </span>
+              )}
+            </div>
+
+            {/* Minimalist 3-Pill Status Row */}
+            {phase === 'IDLE_OPTIMIZATION' && (
+              <div className="flex items-center gap-1.5 pt-0.5">
+                <button
+                  type="button"
+                  onClick={() => openImportWizard(1)}
+                  title={hasMap ? 'Mapa SUMO carregado' : 'Clique para carregar o Mapa SUMO (.net.xml / .net.xml.gz)'}
+                  className={`flex-1 py-1 px-2 rounded-lg text-[10px] font-medium border flex items-center justify-center gap-1.5 transition-all ${
+                    hasMap
+                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
+                      : 'bg-surface/50 border-border text-slate-400 dark:text-slate-500 hover:border-slate-400 dark:hover:border-slate-600 hover:text-slate-700 dark:hover:text-slate-300'
+                  }`}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${hasMap ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`} />
+                  <span>Mapa</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => openImportWizard(2)}
+                  title={hasParquet ? 'Base Parquet importada' : 'Clique para importar a base Parquet (.parquet)'}
+                  className={`flex-1 py-1 px-2 rounded-lg text-[10px] font-medium border flex items-center justify-center gap-1.5 transition-all ${
+                    hasParquet
+                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
+                      : 'bg-surface/50 border-border text-slate-400 dark:text-slate-500 hover:border-slate-400 dark:hover:border-slate-600 hover:text-slate-700 dark:hover:text-slate-300'
+                  }`}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${hasParquet ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`} />
+                  <span>Parquet</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => openImportWizard(3)}
+                  title={hasSensors ? 'Sensores cadastrados' : 'Clique para cadastrar Sensores'}
+                  className={`flex-1 py-1 px-2 rounded-lg text-[10px] font-medium border flex items-center justify-center gap-1.5 transition-all ${
+                    hasSensors
+                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
+                      : 'bg-surface/50 border-border text-slate-400 dark:text-slate-500 hover:border-slate-400 dark:hover:border-slate-600 hover:text-slate-700 dark:hover:text-slate-300'
+                  }`}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${hasSensors ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`} />
+                  <span>Sensores</span>
+                </button>
+              </div>
+            )}
           </div>
 
           <button
             onClick={handleControlAction}
-            className={`w-full py-3 px-4 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-lg transition-all transform active:scale-95 ${btn.color} ${btn.active ? 'animate-pulse' : ''}`}
+            disabled={btn.disabled}
+            title={isStartOptLocked ? getOptLockTooltip() : undefined}
+            className={`w-full py-3 px-4 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-lg transition-all transform ${
+              btn.disabled ? 'cursor-not-allowed' : 'active:scale-95'
+            } ${btn.color} ${btn.active ? 'animate-pulse' : ''}`}
           >
             <Icon className="w-4 h-4" />
             {btn.label}
@@ -272,7 +375,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           )}
                           <button
                             onClick={() => {
-                              sensorService.removeSource(src.id);
+                              requestAuth(async () => {
+                                await sensorService.removeSource(src.id);
+                              });
                               setActiveMenuSourceId(null);
                             }}
                             className="w-full px-2.5 py-1.5 text-left text-xs font-medium text-rose-400 hover:bg-rose-950/40 rounded-lg flex items-center gap-2"

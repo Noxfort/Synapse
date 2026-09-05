@@ -145,9 +145,11 @@ class DataSource:
 class DataAssociation:
     """
     Represents the logical link between a DataSource and a Map Element.
+    Supports optional sub-channel/lane identification for bidirectional/multichannel sensors.
     """
     source_id: str
     element_id: str
+    channel: Optional[str] = None
 
 
 # Forward export for NodeState

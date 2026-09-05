@@ -7,45 +7,30 @@
       "CREATE TABLE IF NOT EXISTS synapse_golden_history (id BIGSERIAL PRIMARY KEY, version VARCHAR(32) DEFAULT 'v1', sensor_str_id VARCHAR(255) NOT NULL, sensor_int_id INTEGER, timestamp_val TIMESTAMPTZ NOT NULL, flow_rate REAL NOT NULL, speed REAL NOT NULL, occupancy REAL NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW());",
       "CREATE TABLE IF NOT EXISTS cloud_file_vault (id SERIAL PRIMARY KEY, filename TEXT NOT NULL, relative_path TEXT NOT NULL UNIQUE, file_content BYTEA, last_updated TIMESTAMP NOT NULL DEFAULT NOW());",
       "CREATE TABLE IF NOT EXISTS audit_physics_episodes (id BIGSERIAL PRIMARY KEY, recorded_at TIMESTAMPTZ DEFAULT NOW(), sensor_str_id VARCHAR(255), sensor_int_id INTEGER, anomaly_score REAL NOT NULL, physics_residual REAL NOT NULL, state_vector JSONB, xai_verdict TEXT, metadata JSONB DEFAULT '{}'::jsonb);",
-      "CREATE TABLE IF NOT EXISTS operation_sessions (session_id BIGSERIAL PRIMARY KEY, start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP, end_time TIMESTAMP, status VARCHAR(50) DEFAULT 'EM_OPERACAO', error_message TEXT);"
+      "CREATE TABLE IF NOT EXISTS operation_sessions (session_id BIGSERIAL PRIMARY KEY, start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP, end_time TIMESTAMP, status VARCHAR(50) DEFAULT 'EM_OPERACAO', error_message TEXT);",
+      "CREATE TABLE IF NOT EXISTS security_audit_logs (id BIGSERIAL PRIMARY KEY, created_at TIMESTAMPTZ DEFAULT NOW(), username VARCHAR(128) NOT NULL, action VARCHAR(128) NOT NULL, details TEXT, ip_address VARCHAR(64));",
+      "CREATE TABLE IF NOT EXISTS synapse_users (username VARCHAR(128) PRIMARY KEY, password_hash TEXT NOT NULL, role VARCHAR(32) NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW());"
     ],
     "indexes": [
       "CREATE INDEX IF NOT EXISTS idx_telemetry_collected_at ON synapse_sensor_telemetry_raw(collected_at);",
+      "CREATE INDEX IF NOT EXISTS idx_telemetry_brin_collected_at ON synapse_sensor_telemetry_raw USING BRIN (collected_at);",
       "CREATE INDEX IF NOT EXISTS idx_telemetry_sensor_int ON synapse_sensor_telemetry_raw(sensor_int_id);",
       "CREATE INDEX IF NOT EXISTS idx_telemetry_sensor_str ON synapse_sensor_telemetry_raw(sensor_str_id);",
       "CREATE INDEX IF NOT EXISTS idx_telemetry_scen_time ON synapse_sensor_telemetry_raw(scenario_name, collected_at DESC);",
       "CREATE INDEX IF NOT EXISTS idx_golden_sensor_time ON synapse_golden_history(sensor_int_id, timestamp_val);",
       "CREATE INDEX IF NOT EXISTS idx_golden_sensor_dow_hour ON synapse_golden_history(sensor_int_id, (EXTRACT(DOW FROM timestamp_val)), (EXTRACT(HOUR FROM timestamp_val)));",
       "CREATE INDEX IF NOT EXISTS idx_sensor_dict_str ON sensor_dictionary(sensor_str_id);",
-      "CREATE INDEX IF NOT EXISTS idx_audit_physics_residual ON audit_physics_episodes(physics_residual DESC);"
+      "CREATE INDEX IF NOT EXISTS idx_audit_physics_residual ON audit_physics_episodes(physics_residual DESC);",
+      "CREATE INDEX IF NOT EXISTS idx_sec_audit_created ON security_audit_logs(created_at DESC);",
+      "CREATE INDEX IF NOT EXISTS idx_synapse_users_role ON synapse_users(role);"
+    ],
+    "optimizations": [
+      "ALTER TABLE cloud_file_vault ALTER COLUMN file_content SET STORAGE EXTERNAL;"
     ],
     "migrations": [
-      {"table": "synapse_sensor_telemetry_raw", "column": "sample_count", "sql": "ALTER TABLE synapse_sensor_telemetry_raw ADD COLUMN sample_count INTEGER DEFAULT 1;"},
-      {"table": "synapse_sensor_telemetry_raw", "column": "sensor_int_id", "sql": "ALTER TABLE synapse_sensor_telemetry_raw ADD COLUMN sensor_int_id INTEGER;"},
-      {"table": "synapse_sensor_telemetry_raw", "column": "status", "sql": "ALTER TABLE synapse_sensor_telemetry_raw ADD COLUMN status SMALLINT DEFAULT 2;"}
-    ]
-  },
-  "sqlite": {
-    "tables": [
-      "CREATE TABLE IF NOT EXISTS sensor_dictionary (sensor_int_id INTEGER PRIMARY KEY AUTOINCREMENT, sensor_str_id TEXT UNIQUE NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);",
-      "CREATE TABLE IF NOT EXISTS synapse_sensor_telemetry_raw (id INTEGER PRIMARY KEY AUTOINCREMENT, collected_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, scenario_name TEXT NOT NULL DEFAULT 'default', sensor_str_id TEXT NOT NULL, sensor_int_id INTEGER, flow_rate REAL, speed REAL, occupancy REAL, sample_count INTEGER DEFAULT 1, status INTEGER DEFAULT 2);",
-      "CREATE TABLE IF NOT EXISTS synapse_sensor_hourly_summary (sensor_int_id INTEGER NOT NULL, summary_hour TIMESTAMP NOT NULL, scenario_name TEXT NOT NULL DEFAULT 'default', sample_count INTEGER NOT NULL, avg_speed REAL NOT NULL, min_speed REAL NOT NULL, avg_flow REAL NOT NULL, avg_occupancy REAL NOT NULL, total_volume REAL NOT NULL, PRIMARY KEY (sensor_int_id, summary_hour, scenario_name));",
-      "CREATE TABLE IF NOT EXISTS synapse_golden_history (id INTEGER PRIMARY KEY AUTOINCREMENT, version TEXT DEFAULT 'v1', sensor_str_id TEXT NOT NULL, sensor_int_id INTEGER, timestamp_val TIMESTAMP NOT NULL, flow_rate REAL NOT NULL, speed REAL NOT NULL, occupancy REAL NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);",
-      "CREATE TABLE IF NOT EXISTS cloud_file_vault (id INTEGER PRIMARY KEY AUTOINCREMENT, filename TEXT NOT NULL, relative_path TEXT NOT NULL UNIQUE, file_content BLOB, last_updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP);",
-      "CREATE TABLE IF NOT EXISTS audit_physics_episodes (id INTEGER PRIMARY KEY AUTOINCREMENT, recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, sensor_str_id TEXT, sensor_int_id INTEGER, anomaly_score REAL NOT NULL, physics_residual REAL NOT NULL, state_vector TEXT, xai_verdict TEXT, metadata TEXT);",
-      "CREATE TABLE IF NOT EXISTS operation_sessions (session_id INTEGER PRIMARY KEY AUTOINCREMENT, start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP, end_time TIMESTAMP, status TEXT DEFAULT 'EM_OPERACAO', error_message TEXT);"
-    ],
-    "indexes": [
-      "CREATE INDEX IF NOT EXISTS idx_telemetry_collected_at ON synapse_sensor_telemetry_raw(collected_at);",
-      "CREATE INDEX IF NOT EXISTS idx_telemetry_sensor_int ON synapse_sensor_telemetry_raw(sensor_int_id);",
-      "CREATE INDEX IF NOT EXISTS idx_telemetry_sensor_str ON synapse_sensor_telemetry_raw(sensor_str_id);",
-      "CREATE INDEX IF NOT EXISTS idx_golden_sensor_time ON synapse_golden_history(sensor_int_id, timestamp_val);",
-      "CREATE INDEX IF NOT EXISTS idx_sensor_dict_str ON sensor_dictionary(sensor_str_id);"
-    ],
-    "migrations": [
-      "ALTER TABLE synapse_sensor_telemetry_raw ADD COLUMN sample_count INTEGER DEFAULT 1;",
-      "ALTER TABLE synapse_sensor_telemetry_raw ADD COLUMN sensor_int_id INTEGER;",
-      "ALTER TABLE synapse_sensor_telemetry_raw ADD COLUMN status INTEGER DEFAULT 2;"
+      {"table": "synapse_sensor_telemetry_raw", "column": "sample_count", "sql": "ALTER TABLE synapse_sensor_telemetry_raw ADD COLUMN IF NOT EXISTS sample_count INTEGER DEFAULT 1;"},
+      {"table": "synapse_sensor_telemetry_raw", "column": "sensor_int_id", "sql": "ALTER TABLE synapse_sensor_telemetry_raw ADD COLUMN IF NOT EXISTS sensor_int_id INTEGER;"},
+      {"table": "synapse_sensor_telemetry_raw", "column": "status", "sql": "ALTER TABLE synapse_sensor_telemetry_raw ADD COLUMN IF NOT EXISTS status SMALLINT DEFAULT 2;"}
     ]
   }
 }

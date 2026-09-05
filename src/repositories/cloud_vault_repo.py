@@ -13,7 +13,7 @@
 import os
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, List, Dict, Any
 
 if TYPE_CHECKING:
     from src.database.db_engine import DatabaseEngine
@@ -24,18 +24,18 @@ logger = logging.getLogger("Synapse.CloudVaultRepo")
 class CloudVaultRepository:
     """
     Repository for managing neural model checkpoints (.pth, .safetensors, .json)
-    synchronization and disaster-recovery backup in PostgreSQL (BYTEA) or SQLite (BLOB).
+    synchronization and disaster-recovery backup in PostgreSQL (BYTEA).
     Ported from CARINA CloudVaultRepository.
     """
 
-    MAX_FILE_SIZE_MB = 50.0
+    MAX_FILE_SIZE_MB = 100.0
 
     def __init__(self, engine: 'DatabaseEngine'):
         self.engine = engine
 
     def sync_file_to_vault(self, filepath: str, base_dir: str) -> bool:
         """
-        Reads a local file and upserts it into cloud_file_vault if it's <= 50MB.
+        Reads a local file and upserts it into cloud_file_vault if it's <= MAX_FILE_SIZE_MB.
         Returns True if successful, False otherwise.
         """
         try:
@@ -60,21 +60,13 @@ class CloudVaultRepository:
 
             try:
                 cursor = conn.cursor()
-                if self.engine.db_type == "postgres":
-                    import psycopg2
-                    cursor.execute("""
-                        INSERT INTO cloud_file_vault (filename, relative_path, file_content, last_updated)
-                        VALUES (%s, %s, %s, %s)
-                        ON CONFLICT (relative_path) 
-                        DO UPDATE SET file_content = EXCLUDED.file_content, last_updated = EXCLUDED.last_updated;
-                    """, (filename, rel_path, psycopg2.Binary(content), now))
-                else:
-                    cursor.execute("""
-                        INSERT INTO cloud_file_vault (filename, relative_path, file_content, last_updated)
-                        VALUES (?, ?, ?, ?)
-                        ON CONFLICT(relative_path) 
-                        DO UPDATE SET file_content=excluded.file_content, last_updated=excluded.last_updated;
-                    """, (filename, rel_path, content, now))
+                import psycopg2
+                cursor.execute("""
+                    INSERT INTO cloud_file_vault (filename, relative_path, file_content, last_updated)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (relative_path) 
+                    DO UPDATE SET file_content = EXCLUDED.file_content, last_updated = EXCLUDED.last_updated;
+                """, (filename, rel_path, psycopg2.Binary(content), now))
 
                 conn.commit()
                 logger.debug(f"[CloudVaultRepo] Synced {rel_path} ({file_size_mb:.2f}MB) into vault.")
@@ -100,7 +92,8 @@ class CloudVaultRepository:
 
         for root, dirs, files in os.walk(base_dir):
             for file in files:
-                if file.endswith('.db') or file.endswith('.db-journal') or file.endswith('.log'):
+                if (file.endswith('.db') or file.endswith('.db-journal') 
+                        or file.endswith('.log') or file.endswith('.jsonl') or file.endswith('.tmp')):
                     continue
 
                 filepath = os.path.join(root, file)
@@ -114,7 +107,7 @@ class CloudVaultRepository:
                         errors += 1
 
         if synced > 0 or errors > 0:
-            logger.info(f"[CloudVaultRepo] Sync completed: {synced} synced, {skipped} skipped (>50MB), {errors} errors.")
+            logger.info(f"[CloudVaultRepo] Sync completed: {synced} synced, {skipped} skipped (>{self.MAX_FILE_SIZE_MB}MB), {errors} errors.")
 
     def fetch_file_from_vault(self, relative_path: str) -> Optional[bytes]:
         """Reads raw binary content of a file from cloud_file_vault by relative_path."""
@@ -123,8 +116,7 @@ class CloudVaultRepository:
             return None
         try:
             cursor = conn.cursor()
-            param = "%s" if self.engine.db_type == "postgres" else "?"
-            cursor.execute(f"SELECT file_content FROM cloud_file_vault WHERE relative_path = {param};", (relative_path,))
+            cursor.execute("SELECT file_content FROM cloud_file_vault WHERE relative_path = %s;", (relative_path,))
             row = cursor.fetchone()
             if row and row[0] is not None:
                 val = row[0]
@@ -176,3 +168,39 @@ class CloudVaultRepository:
             return restored
         finally:
             conn.close()
+
+    def has_file(self, relative_path: str) -> bool:
+        """Checks if a file exists in cloud_file_vault without loading content."""
+        conn = self.engine.get_connection()
+        if not conn:
+            return False
+        try:
+            cursor = conn.cursor()
+            param = "%s" if self.engine.db_type == "postgres" else "?"
+            cursor.execute(f"SELECT 1 FROM cloud_file_vault WHERE relative_path = {param};", (relative_path,))
+            return cursor.fetchone() is not None
+        except Exception as e:
+            logger.debug(f"[CloudVaultRepo] Error checking existence for {relative_path}: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def list_vault_files(self) -> List[Dict[str, Any]]:
+        """Lists all files stored in the vault along with metadata."""
+        conn = self.engine.get_connection()
+        if not conn:
+            return []
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT filename, relative_path, last_updated FROM cloud_file_vault ORDER BY relative_path;")
+            rows = cursor.fetchall()
+            return [
+                {"filename": row[0], "relative_path": row[1], "last_updated": row[2]}
+                for row in rows
+            ]
+        except Exception as e:
+            logger.debug(f"[CloudVaultRepo] Error listing vault files: {e}")
+            return []
+        finally:
+            conn.close()
+

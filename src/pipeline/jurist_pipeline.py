@@ -30,6 +30,7 @@ from src.slm.device_manager import SLMDeviceManager
 from src.slm.model_loader import SLMModelLoader
 from src.slm.output_sanitizer import SLMOutputSanitizer
 from src.slm.prompt_builder import SLMPromptBuilder
+from src.slm.process.isolated_jurist_manager import IsolatedJuristManager
 from src.utils.logging_setup import get_logger
 from src.utils.model_paths import get_qwen_gguf_path
 
@@ -44,20 +45,30 @@ class JuristPipeline(IJuristPipeline):
     - [SRP] Encapsulates all neural model lifecycle, C++ llama_cpp bindings, tokenization,
             and memory cleanups away from the high-level Agent.
     - [DIP] Implements IJuristPipeline interface.
-    - [CARINA Parity] Zero-VRAM hoarding with automatic GPU/CPU resolution and output sanitization.
+    - [Fault Domain Isolation] Delegates execution to IsolatedJuristManager (out-of-process) by default.
     """
 
-    def __init__(self, model_id: Optional[str] = None):
+    def __init__(self, model_id: Optional[str] = None, isolated: bool = True):
         self.model_id = model_id or get_qwen_gguf_path()
-        self.tokenizer: Optional[Any] = None
-        self._model: Optional[Any] = None
-        self._is_loaded = False
+        self.isolated = isolated
         self.is_gguf = str(self.model_id).endswith(".gguf")
         self._lock = threading.Lock()
         self._device = "cpu"
 
+        # In-process state (used if isolated=False or fallback)
+        self.tokenizer: Optional[Any] = None
+        self._model: Optional[Any] = None
+        self._is_loaded = False
+
+        # Out-of-process manager (Fault-Domain & Zero-VRAM Isolation)
+        self._isolated_manager = (
+            IsolatedJuristManager(model_id=self.model_id) if self.isolated else None
+        )
+
     @property
     def is_loaded(self) -> bool:
+        if self.isolated and self._isolated_manager:
+            return self._isolated_manager.is_loaded
         return self._is_loaded and self._model is not None
 
     @property
@@ -72,6 +83,10 @@ class JuristPipeline(IJuristPipeline):
     def load_resources(self, device: str = "auto", gpu_layers: int = 16) -> None:
         """Loads the SLM model into memory on demand using CARINA-style SLM loader."""
         if self.is_loaded:
+            return
+
+        if self.isolated and self._isolated_manager:
+            self._isolated_manager.load_resources(device=device, gpu_layers=gpu_layers)
             return
 
         logger.info(f"[JuristPipeline] Loading SLM on-demand from: {self.model_id}")
@@ -111,6 +126,10 @@ class JuristPipeline(IJuristPipeline):
 
     def unload_resources(self) -> None:
         """Frees VRAM/RAM by destroying the model instance and clearing GPU cache."""
+        if self.isolated and self._isolated_manager:
+            self._isolated_manager.unload_resources()
+            return
+
         if not self._is_loaded and self._model is None:
             return
 
@@ -153,13 +172,19 @@ class JuristPipeline(IJuristPipeline):
         **kwargs: Any
     ) -> str:
         """
-        Executes on-demand XAI narrative synthesis:
-        1. Loads GGUF on demand
-        2. Formats chat prompt via SLMPromptBuilder from JSON database
-        3. Executes in-process inference
-        4. Sanitizes response via SLMOutputSanitizer
-        5. Automatically unloads model to release 100% VRAM if auto_unload=True
+        Executes on-demand XAI narrative synthesis.
+        Delegates to isolated process worker when isolated=True.
         """
+        if self.isolated and self._isolated_manager:
+            return self._isolated_manager.generate_report(
+                tensor_data=tensor_data,
+                timestamp=timestamp,
+                locale=locale,
+                target=target,
+                auto_unload=auto_unload,
+                **kwargs
+            )
+
         with self._lock:
             try:
                 if not self.is_loaded:
@@ -202,6 +227,12 @@ class JuristPipeline(IJuristPipeline):
         """
         Executes general verdict generation with prompt formatting and post-cleaning.
         """
+        if self.isolated and self._isolated_manager:
+            return self._isolated_manager.generate(
+                context_data=context_data,
+                auto_unload=auto_unload
+            )
+
         with self._lock:
             try:
                 if not self.is_loaded:

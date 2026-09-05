@@ -35,7 +35,14 @@
     "local": "Local",
     "global": "Global",
     "toggleOrigin": "Alternar Origem (Local/Global)",
-    "removeSource": "Remover Sensor"
+    "removeSource": "Remover Sensor",
+    "optReqMissing": "Requisitos pendentes para iniciar otimização:",
+    "optReqMap": "Rede viária SUMO (.net.xml / .net.xml.gz)",
+    "optReqParquet": "Base histórica Parquet (.parquet)",
+    "optReqSensors": "Ao menos um sensor cadastrado",
+    "optPrerequisitesTitle": "Pré-requisitos da Otimização",
+    "optReady": "Pronto",
+    "optPending": "Pendente"
   },
   "metrics": {
     "throughput": "Vazão HFT",
@@ -129,6 +136,39 @@
     "addAnotherSensor": "Cadastrar Outro Sensor",
     "registeredSensors": "Sensores Registrados no Sistema",
     "browse": "Procurar",
-    "browseTooltip": "Procurar arquivo no computador"
+    "browseTooltip": "Procurar arquivo no computador",
+    "reqMapToAdvance": "Carregue a rede viária SUMO (.net.xml ou .net.xml.gz) para avançar",
+    "reqParquetToAdvance": "Importe a base histórica Parquet (.parquet) para avançar",
+    "stepLockedTooltip": "Fase bloqueada. Conclua a etapa anterior para desbloquear.",
+    "sensorTypeParquet": "Base Parquet (.parquet)",
+    "sensorTypeLocal": "Dispositivo Local (Push)",
+    "sensorTypeGlobal": "API Externa (Pull)",
+    "importParquetSensor": "Importar Base de Sensores"
+  },
+  "security": {
+    "authRequired": "Autenticação Necessária",
+    "authPrompt": "Ação restrita. Insira suas credenciais para prosseguir.",
+    "username": "Nome de Usuário",
+    "usernamePlaceholder": "ex.: admin...",
+    "password": "Senha",
+    "authenticate": "Autenticar",
+    "authenticating": "Autenticando...",
+    "superuser": "Super Usuário / Usuário",
+    "lockdownTitle": "SISTEMA BLOQUEADO (LOCKDOWN)",
+    "lockdownDesc1": "Múltiplas tentativas de acesso inválidas. A infraestrutura física e os motores de IA foram isolados para proteção.",
+    "lockdownDesc2": "Apenas um Super Usuário ou a Chave Mestra podem reestabelecer o funcionamento.",
+    "verifyingSuperuser": "Verificando Superusuário...",
+    "unlockSystem": "DESBLOQUEAR SISTEMA"
+  },
+  "accounts": {
+    "title": "Gerenciamento de Contas",
+    "addNewAccount": "Adicionar Nova Conta:",
+    "registeredAccounts": "Contas Cadastradas:",
+    "accessLevel": "Nível de Acesso",
+    "operator": "Operador (Acesso Padrão)",
+    "superuser": "Super Usuário (Acesso Total)",
+    "addUser": "Adicionar Usuário",
+    "removeUser": "Remover",
+    "refreshList": "Atualizar Lista"
   }
 }

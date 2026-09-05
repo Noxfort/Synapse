@@ -84,15 +84,58 @@ class RuntimeConnector(QObject):
         
         self.hft_worker.start()
 
+    def set_transmitter_channel(
+        self,
+        pipe_sender: Any,
+        emergency_flag: Optional[Any] = None,
+        transmitter_process: Optional[Any] = None
+    ):
+        """Configures dedicated multiprocessing Pipe channel for isolated transmitter process."""
+        self.pipe_sender = pipe_sender
+        self.emergency_flag = emergency_flag
+        self.transmitter_process = transmitter_process
+
+    def start_dedicated_transmitter(self, endpoint: str = "localhost:50051"):
+        """Spawns the isolated HFT transmitter process via multiprocessing."""
+        from src.transmission.transmitter_process import start_transmitter_process
+        proc, pipe_sender, emergency_event, stop_event = start_transmitter_process(endpoint=endpoint)
+        self.set_transmitter_channel(pipe_sender, emergency_flag=emergency_event, transmitter_process=proc)
+        self._stop_event = stop_event
+        self.log_message.emit(f"[HFT] 🚀 Dedicated Transmitter Process spawned (PID: {proc.pid}).")
+        return proc
+
     def stop_connection(self):
-        """Terminates the network worker."""
+        """Terminates the network worker and/or dedicated transmitter process."""
+        if hasattr(self, "pipe_sender") and self.pipe_sender:
+            try:
+                self.pipe_sender.send({"command": "STOP"})
+            except Exception:
+                pass
+            self.pipe_sender = None
+
+        if hasattr(self, "_stop_event") and self._stop_event:
+            self._stop_event.set()
+
+        if hasattr(self, "transmitter_process") and self.transmitter_process and self.transmitter_process.is_alive():
+            self.transmitter_process.join(timeout=1.0)
+            if self.transmitter_process.is_alive():
+                self.transmitter_process.terminate()
+            self.transmitter_process = None
+
         if self.hft_worker and self.hft_worker.isRunning():
             self.hft_worker.stop_worker()
             self.hft_worker = None
         self.is_connecting = False
 
     def send_packet(self, packet: dict):
-        """Proxy method to send runtime data via the active worker."""
+        """Proxy method to send runtime data via the dedicated transmitter pipe or fallback worker."""
+        if hasattr(self, "pipe_sender") and self.pipe_sender is not None:
+            try:
+                self.pipe_sender.send(packet)
+                return
+            except Exception as e:
+                self.log_message.emit(f"[HFT] Error sending packet to dedicated transmitter: {e}")
+
         if self.hft_worker and hasattr(self.hft_worker, 'send_runtime_command'):
             self.hft_worker.send_runtime_command(packet)
 

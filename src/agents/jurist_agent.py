@@ -57,6 +57,14 @@ class JuristAgent(BaseAgent):
     def is_loaded(self) -> bool:
         return self.pipeline.is_loaded
 
+    @property
+    def is_gguf(self) -> bool:
+        return getattr(self.pipeline, "is_gguf", False)
+
+    @property
+    def model_id(self) -> Optional[str]:
+        return getattr(self.pipeline, "model_id", None)
+
     def load_resources(self, device: str = "auto", gpu_layers: int = 16) -> None:
         """Delegates resource loading to JuristPipeline."""
         self.pipeline.load_resources(device=device, gpu_layers=gpu_layers)

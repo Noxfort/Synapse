@@ -32,9 +32,10 @@ import {
   Moon,
   Maximize2,
   Minimize2,
-  Minus
+  Minus,
+  UserCheck
 } from 'lucide-react';
-import { useSystemStore } from '../../stores';
+import { useSystemStore, useSecurityStore } from '../../stores';
 import { toggleFullscreen, minimizeToTray } from '../../utils/windowControls';
 
 interface HeaderProps {
@@ -54,6 +55,7 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   const { t, i18n } = useTranslation();
   const { phase, theme, toggleTheme } = useSystemStore();
+  const { requestAuth, currentUser } = useSecurityStore();
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
@@ -197,9 +199,23 @@ export const Header: React.FC<HeaderProps> = ({
           <Terminal className="w-4 h-4" />
         </button>
 
-        {/* Settings Dialog */}
+        {/* Current User Session Badge */}
+        {currentUser && (
+          <div
+            title={`Sessão autenticada: ${currentUser.username} (${currentUser.role})`}
+            className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg bg-surface border border-border text-slate-700 dark:text-slate-300 shadow-sm"
+          >
+            <UserCheck className={`w-3.5 h-3.5 ${currentUser.role === 'OPERATOR' ? 'text-accent-cyan' : 'text-amber-500'}`} />
+            <span className="truncate max-w-[120px]">{currentUser.username}</span>
+            <span className="text-[10px] px-1 py-0.2 rounded bg-primary-500/10 text-primary-500 font-bold">
+              {currentUser.role}
+            </span>
+          </div>
+        )}
+
+        {/* Settings Dialog - Protected by Security Layer */}
         <button
-          onClick={openSettings}
+          onClick={() => requestAuth(() => openSettings())}
           title={t('nav.settings')}
           className="p-2 rounded-lg bg-surface border border-border text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:border-slate-400 dark:hover:border-slate-600 transition-all"
         >

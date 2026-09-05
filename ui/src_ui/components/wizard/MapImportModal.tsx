@@ -32,6 +32,7 @@ export const MapImportModal: React.FC<MapImportModalProps> = ({ isOpen, onClose 
   const { t } = useTranslation();
   const [filePath, setFilePath] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isBrowsing, setIsBrowsing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -43,6 +44,8 @@ export const MapImportModal: React.FC<MapImportModalProps> = ({ isOpen, onClose 
   };
 
   const handleBrowseFile = async () => {
+    if (isBrowsing) return;
+    setIsBrowsing(true);
     setErrorMessage(null);
     try {
       const res = await systemService.pickFile({
@@ -57,14 +60,11 @@ export const MapImportModal: React.FC<MapImportModalProps> = ({ isOpen, onClose 
           return;
         }
         setFilePath(res.path);
-      } else if (res?.cancelled) {
-        // User closed or cancelled dialog
-      } else {
-        fileInputRef.current?.click();
       }
     } catch (err) {
-      console.warn('[MapImportModal] Falha ao invocar seletor nativo, usando fallback HTML:', err);
-      fileInputRef.current?.click();
+      console.warn('[MapImportModal] Falha ao invocar seletor de arquivos:', err);
+    } finally {
+      setIsBrowsing(false);
     }
   };
 
@@ -152,11 +152,16 @@ export const MapImportModal: React.FC<MapImportModalProps> = ({ isOpen, onClose 
               <button
                 type="button"
                 onClick={handleBrowseFile}
-                title={t('wizard.browseTooltip')}
-                className="h-10 px-3.5 bg-surface border border-border hover:border-primary-500 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all shadow-sm group"
+                disabled={isBrowsing}
+                title={isBrowsing ? 'Abrindo seletor de arquivos...' : t('wizard.browseTooltip')}
+                className={`h-10 px-3.5 bg-surface border border-border text-slate-700 dark:text-slate-300 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all shadow-sm group ${
+                  isBrowsing
+                    ? 'opacity-50 cursor-not-allowed'
+                    : 'hover:border-primary-500 hover:text-slate-900 dark:hover:text-white'
+                }`}
               >
-                <FolderOpen className="w-4 h-4 text-primary-500 dark:text-primary-400 group-hover:scale-110 transition-transform" />
-                <span>{t('wizard.browse')}</span>
+                <FolderOpen className={`w-4 h-4 text-primary-500 dark:text-primary-400 ${isBrowsing ? 'animate-pulse' : 'group-hover:scale-110'} transition-transform`} />
+                <span>{isBrowsing ? 'Aguarde...' : t('wizard.browse')}</span>
               </button>
             </div>
           </div>

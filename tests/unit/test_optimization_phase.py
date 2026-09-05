@@ -194,8 +194,16 @@ def test_database_handler_registers_datasource_on_import(mock_app_state, sample_
     assert len(responses) == 1
     assert responses[0][0] is True
     
+    # Wait for async import thread to complete
+    import time
+    for _ in range(50):
+        if any(s.source_type == SourceType.PARQUET for s in mock_app_state.get_all_data_sources()):
+            break
+        time.sleep(0.02)
+
     # Verify DataSource was registered in app_state
     sources = mock_app_state.get_all_data_sources()
     parquet_sources = [s for s in sources if s.source_type == SourceType.PARQUET]
     assert len(parquet_sources) == 1
     assert parquet_sources[0].id == "historical_base"
+

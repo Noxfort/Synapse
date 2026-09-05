@@ -295,4 +295,11 @@ class AuditorCalibrationStage(BaseStage):
         import shutil
         shutil.move(temp_path, checkpoint_path)
 
+        try:
+            from src.managers.storage_manager import StorageManager
+            sm = StorageManager()
+            sm.sync_file_to_vault(checkpoint_path)
+        except Exception:
+            pass
+
         self.log(f"[AuditorCalibrationStage] 💾 Checkpoint saved: {checkpoint_path}")

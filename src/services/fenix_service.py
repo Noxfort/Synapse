@@ -176,6 +176,17 @@ class FenixService(QObject):
             logger.critical("[FENIX] 🚨 Emergency Hot-Reset requested by AuditorAgent.")
             self.start_fenix_cycle(TriggerType.EMERGENCY)
 
+    def bind_transmitter_emergency_flag(self, emergency_flag: Any):
+        """Binds an isolated transmitter process emergency Event flag to Fênix fallback signal."""
+        def _on_fallback(active: bool):
+            if hasattr(emergency_flag, "set") and hasattr(emergency_flag, "clear"):
+                if active:
+                    emergency_flag.set()
+                else:
+                    emergency_flag.clear()
+        self.request_fallback_activation.connect(_on_fallback)
+        logger.info("[FENIX] Bound emergency fallback signal to dedicated transmitter process flag.")
+
     # --- Strategy Execution Engine ---
     def start_fenix_cycle(self, trigger: TriggerType):
         if self.is_running:

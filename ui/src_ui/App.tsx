@@ -20,12 +20,16 @@
 
 import React, { useEffect } from 'react';
 import { AppLayout } from './components/layout/AppLayout';
-import { useSystemStore } from './stores';
+import { SecurityModal } from './components/security/SecurityModal';
+import { LockdownOverlay } from './components/security/LockdownOverlay';
+import { useSystemStore, useSecurityStore } from './stores';
 import { toggleFullscreen } from './utils/windowControls';
 import { systemService } from './services/api';
 
 export const App: React.FC = () => {
   const theme = useSystemStore((s) => s.theme);
+  const checkLockdown = useSecurityStore((s) => s.checkLockdown);
+  const setLockedDown = useSecurityStore((s) => s.setLockedDown);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -68,7 +72,34 @@ export const App: React.FC = () => {
     })();
   }, []);
 
-  return <AppLayout />;
+  // Security lockdown listener and initialization
+  useEffect(() => {
+    checkLockdown();
+
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      try {
+        const { securityService } = await import('./services/api');
+        unlisten = await securityService.onLockdownEvent((data) => {
+          setLockedDown(Boolean(data?.active));
+        });
+      } catch (err) {
+        console.warn('Could not initialize lockdown event listener:', err);
+      }
+    })();
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [checkLockdown, setLockedDown]);
+
+  return (
+    <>
+      <AppLayout />
+      <SecurityModal />
+      <LockdownOverlay />
+    </>
+  );
 };
 
 export default App;

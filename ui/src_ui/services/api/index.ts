@@ -22,3 +22,4 @@ export * from './TopologyService';
 export * from './SensorService';
 export * from './XaiService';
 export * from './SystemService';
+export * from './SecurityService';

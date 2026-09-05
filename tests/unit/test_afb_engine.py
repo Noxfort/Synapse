@@ -79,3 +79,64 @@ def test_afb_engine_yields_to_meh():
     # Should return NO_DATA (Level 3 degrade)
     assert result == NO_DATA
     assert result.is_degraded is True
+
+
+def test_replay_engine_hierarchical_resolution():
+    """Test ReplayEngine hierarchical temporal resolution tiers."""
+    from src.afb.replay_engine import ReplayEngine
+    from datetime import datetime
+    import pandas as pd
+
+    # Mock telemetry reader returning historical samples
+    mock_reader = MagicMock()
+    # Create sample data for a known Tuesday 14:30:00 (timestamp: 2026-09-08 14:30:00)
+    # 2026-09-08 was a Tuesday (weekday = 1)
+    base_dt = datetime(2026, 9, 8, 14, 30, 0)
+    mock_reader.query_telemetry_history.return_value = [
+        {
+            "sensor_str_id": "sensor_north",
+            "sensor_int_id": 1,
+            "speed": 55.0,
+            "flow_rate": 350.0,
+            "occupancy": 0.15,
+            "sample_count": 10,
+            "status": 1,
+            "collected_at": base_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "scenario_name": "peak_hour"
+        }
+    ]
+
+    engine = ReplayEngine(telemetry_reader=mock_reader)
+    assert engine.is_loaded is True
+    assert engine.source_type == "database"
+    assert "sensor_north" in engine.sensor_ids
+
+    # 1. Exact Seconds match (+/- 10s) -> Tier 1
+    target_ts = base_dt.timestamp() + 5.0 # 5 seconds later
+    frame_t1 = engine.get_replay_frame(target_ts)
+    assert frame_t1["_metadata"]["resolution_tier"] == "tier_1_seconds"
+    assert frame_t1["readings"]["sensor_north"]["speed"] == 55.0
+    assert frame_t1["readings"]["sensor_north"]["confidence"] == 0.95
+
+    # 2. Minutes match (+/- 15min) -> Tier 2
+    target_ts_t2 = base_dt.timestamp() + 600.0 # 10 minutes later
+    frame_t2 = engine.get_replay_frame(target_ts_t2)
+    assert frame_t2["_metadata"]["resolution_tier"] == "tier_2_minutes"
+    assert frame_t2["readings"]["sensor_north"]["speed"] == 55.0
+    assert frame_t2["readings"]["sensor_north"]["confidence"] == 0.85
+
+    # 3. Same Day-of-Week & Same Hour (+/- 1h, but different day) -> Tier 3
+    # Next Tuesday at 14:00 (1 week later)
+    target_ts_t3 = (base_dt + pd.Timedelta(days=7, minutes=-20)).timestamp()
+    frame_t3 = engine.get_replay_frame(target_ts_t3)
+    assert frame_t3["_metadata"]["resolution_tier"] == "tier_3_weekday_hour"
+    assert frame_t3["readings"]["sensor_north"]["confidence"] == 0.75
+
+    # 4. Fallback when empty data -> Safe Baseline
+    empty_engine = ReplayEngine(data_path="/non/existent/path.parquet")
+    empty_engine.is_loaded = False
+    empty_engine.data = None
+    empty_frame = empty_engine.get_replay_frame()
+    assert empty_frame["_metadata"]["resolution_tier"] == "tier_5_safe_baseline"
+    assert "sensor_fallback" in empty_frame["readings"]
+

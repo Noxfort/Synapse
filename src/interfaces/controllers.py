@@ -139,6 +139,10 @@ class ITelemetryService(Protocol):
         """Reports a critical software error incident."""
         ...
 
+    def report_incident(self, category: str, level: str, message: str) -> None:
+        """Reports an incident with category and severity level to the monitor."""
+        ...
+
     def report_shutdown(self) -> None:
         """Reports application shutdown and ensures queue flush."""
         ...

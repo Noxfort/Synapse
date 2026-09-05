@@ -20,7 +20,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, Sparkles, ArrowRight, ArrowLeft, CheckCircle2 } from 'lucide-react';
+import { X, Sparkles, ArrowRight, ArrowLeft, CheckCircle2, Lock } from 'lucide-react';
 import { useTopologyStore, useEtlStore, useSensorsStore } from '../../stores';
 import { WizardStepper } from './WizardStepper';
 import { MapStep } from './steps/MapStep';
@@ -50,6 +50,14 @@ export const ImportWizardModal: React.FC<ImportWizardModalProps> = ({
   const { importProgress, resetEtlState } = useEtlStore();
   const sources = useSensorsStore((s) => s.sources);
 
+  const hasParquetSource = sources.some(
+    (s) => s.connection_string?.toLowerCase().endsWith('.parquet') || s.source_type === 'Parquet' || s.id === 'historical_base'
+  );
+  const isParquetDone = importProgress.progress === 100 || hasParquetSource;
+  const hasLiveSensors = sources.some(
+    (s) => s.source_type !== 'SUMO Network' && s.id !== 'map_main'
+  );
+
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(initialStep);
 
   useEffect(() => {
@@ -64,13 +72,13 @@ export const ImportWizardModal: React.FC<ImportWizardModalProps> = ({
     onClose();
   };
 
-  const hasParquetSource = sources.some(
-    (s) => s.connection_string?.toLowerCase().endsWith('.parquet') || s.source_type === 'Parquet'
-  );
-  const isParquetDone = importProgress.progress === 100 || hasParquetSource;
-  const hasLiveSensors = sources.some(
-    (s) => s.source_type !== 'Parquet' && !s.connection_string?.toLowerCase().endsWith('.parquet') && s.source_type !== 'SUMO Network'
-  );
+  const canAdvance = currentStep === 1 ? mapLoaded : currentStep === 2 ? isParquetDone : true;
+
+  const advanceTooltip = !canAdvance
+    ? currentStep === 1
+      ? t('wizard.reqMapToAdvance')
+      : t('wizard.reqParquetToAdvance')
+    : t('wizard.next');
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md p-4 animate-in fade-in select-none">
@@ -123,11 +131,29 @@ export const ImportWizardModal: React.FC<ImportWizardModalProps> = ({
           )}
 
           <div className="flex items-center gap-2">
+            {!canAdvance && currentStep < 3 && (
+              <span className="text-[10px] text-amber-600 dark:text-amber-400 font-medium flex items-center gap-1 mr-1">
+                <Lock className="w-3 h-3 text-amber-500 flex-shrink-0" />
+                <span>{currentStep === 1 ? 'Mapa pendente' : 'Parquet pendente'}</span>
+              </span>
+            )}
+
             {currentStep < 3 ? (
               <button
-                onClick={() => setCurrentStep((currentStep + 1) as 1 | 2 | 3)}
-                className="px-5 py-2 rounded-xl bg-primary-600 hover:bg-primary-500 text-white text-xs font-bold shadow-md shadow-primary-600/20 transition-all flex items-center gap-1.5"
+                onClick={() => {
+                  if (canAdvance) {
+                    setCurrentStep((currentStep + 1) as 1 | 2 | 3);
+                  }
+                }}
+                disabled={!canAdvance}
+                title={advanceTooltip}
+                className={`px-5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  canAdvance
+                    ? 'bg-primary-600 hover:bg-primary-500 text-white shadow-md shadow-primary-600/20 cursor-pointer active:scale-95'
+                    : 'bg-slate-200 dark:bg-surface border border-border text-slate-400 dark:text-slate-500 cursor-not-allowed opacity-60 shadow-none'
+                }`}
               >
+                {!canAdvance && <Lock className="w-3.5 h-3.5" />}
                 <span>{t('wizard.next')}</span>
                 <ArrowRight className="w-4 h-4" />
               </button>

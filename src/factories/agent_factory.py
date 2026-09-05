@@ -30,6 +30,7 @@ from src.agents.peak_classifier_agent import PeakClassifierAgent
 from src.agents.linguist_agent import LinguistAgent
 from src.agents.auditor_agent import AuditorAgent
 from src.agents.jurist_agent import JuristAgent
+from src.agents.compass_agent import CompassAgent
 
 # Dedicated Domain Factories (SOLID / OCP / DIP)
 from src.factories.agent_registry import AgentRegistry
@@ -40,6 +41,7 @@ from src.factories.specialist_factory import SpecialistFactory
 from src.factories.coordinator_factory import CoordinatorFactory
 from src.factories.linguist_factory import LinguistFactory
 from src.factories.jurist_factory import JuristFactory
+from src.factories.compass_factory import CompassFactory
 from src.factories.fuser_model_factory import FuserModelFactory
 from src.services.dynamic_sensor_calibrator import DynamicSensorCalibrator
 
@@ -62,6 +64,7 @@ class AgentFactory:
         "coordinator": CoordinatorFactory,
         "linguist": LinguistFactory,
         "jurist": JuristFactory,
+        "compass": CompassFactory,
     }
 
     def __init__(self, config: Optional[Dict[str, Any]] = None, registry: Optional[AgentRegistry] = None):
@@ -89,6 +92,21 @@ class AgentFactory:
         freeing GPU/RAM resources immediately after onboarding/teaching.
         """
         self.registry.remove(source_id, 'linguist')
+
+    def get_or_create_compass(self, source_id: str) -> CompassAgent:
+        """Retrieves or creates CompassAgent for a sensor source."""
+        agent = self.registry.get(source_id, 'compass')
+        if agent is None:
+            agent = self.create_compass(self.config)
+            self.registry.register(source_id, 'compass', agent)
+        return agent
+
+    def release_compass(self, source_id: str) -> None:
+        """
+        Explicitly deactivates and unregisters the ephemeral CompassAgent for a sensor source,
+        freeing GPU/RAM resources immediately after directional reconciliation.
+        """
+        self.registry.remove(source_id, 'compass')
 
     def get_or_create_specialist(self, source_id: str) -> SpecialistAgent:
         """Retrieves or creates SpecialistAgent for a sensor source."""
@@ -162,6 +180,10 @@ class AgentFactory:
     @staticmethod
     def create_jurist(config: Dict[str, Any], **kwargs: Any) -> JuristAgent:
         return JuristFactory.create(config=config, **kwargs)
+
+    @staticmethod
+    def create_compass(config: Dict[str, Any], **kwargs: Any) -> CompassAgent:
+        return CompassFactory.create(config=config, **kwargs)
 
     @staticmethod
     def create_fuser(config: Dict[str, Any], num_variates: int = 10, seq_len: int = 60, pred_len: int = 1, **kwargs: Any) -> FuserAgent:

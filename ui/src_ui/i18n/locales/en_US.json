@@ -35,7 +35,14 @@
     "local": "Local",
     "global": "Global",
     "toggleOrigin": "Toggle Origin (Local/Global)",
-    "removeSource": "Remove Sensor"
+    "removeSource": "Remove Sensor",
+    "optReqMissing": "Pending requirements to start optimization:",
+    "optReqMap": "SUMO road network (.net.xml / .net.xml.gz)",
+    "optReqParquet": "Historical Parquet dataset (.parquet)",
+    "optReqSensors": "At least one registered sensor",
+    "optPrerequisitesTitle": "Optimization Prerequisites",
+    "optReady": "Ready",
+    "optPending": "Pending"
   },
   "metrics": {
     "throughput": "HFT Throughput",
@@ -129,6 +136,39 @@
     "addAnotherSensor": "Register Another Sensor",
     "registeredSensors": "Registered Sensors in System",
     "browse": "Browse",
-    "browseTooltip": "Browse file on your computer"
+    "browseTooltip": "Browse file on your computer",
+    "reqMapToAdvance": "Load SUMO road network (.net.xml or .net.xml.gz) to advance",
+    "reqParquetToAdvance": "Import historical Parquet dataset (.parquet) to advance",
+    "stepLockedTooltip": "Phase locked. Complete the previous step to unlock.",
+    "sensorTypeParquet": "Parquet Base (.parquet)",
+    "sensorTypeLocal": "Local Device (Push)",
+    "sensorTypeGlobal": "External API (Pull)",
+    "importParquetSensor": "Import Sensor Base"
+  },
+  "security": {
+    "authRequired": "Authentication Required",
+    "authPrompt": "Restricted operation. Enter your credentials to proceed.",
+    "username": "Username",
+    "usernamePlaceholder": "e.g., admin...",
+    "password": "Password",
+    "authenticate": "Authenticate",
+    "authenticating": "Authenticating...",
+    "superuser": "Super User / User",
+    "lockdownTitle": "SYSTEM LOCKED (LOCKDOWN)",
+    "lockdownDesc1": "Multiple invalid login attempts. Physical infrastructure and neural engines were isolated for security.",
+    "lockdownDesc2": "Only an authorized Super User or Master Key can unlock the system.",
+    "verifyingSuperuser": "Verifying Super User...",
+    "unlockSystem": "UNLOCK SYSTEM"
+  },
+  "accounts": {
+    "title": "Account Management",
+    "addNewAccount": "Add New Account:",
+    "registeredAccounts": "Registered Accounts:",
+    "accessLevel": "Access Level",
+    "operator": "Operator (Standard Access)",
+    "superuser": "Super User (Full Access)",
+    "addUser": "Add User",
+    "removeUser": "Remove",
+    "refreshList": "Refresh List"
   }
 }

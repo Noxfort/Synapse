@@ -60,7 +60,7 @@ class SensorTelemetryReader:
             return q_obj
         if dialect_variant and dialect_variant in q_obj:
             return q_obj[dialect_variant]
-        return q_obj.get(self.engine.db_type, q_obj.get("sqlite", ""))
+        return q_obj.get("postgres", q_obj.get(self.engine.db_type, ""))
 
     def query_telemetry_history(self, limit_seconds: Optional[int] = None) -> List[Dict[str, Any]]:
         """Retrieves sensor telemetry samples from database."""
@@ -72,8 +72,7 @@ class SensorTelemetryReader:
             if limit_seconds is not None:
                 cutoff_dt = datetime.now() - timedelta(seconds=limit_seconds)
                 sql = self._get_query("query_telemetry_history")
-                param = cutoff_dt if self.engine.db_type == "postgres" else cutoff_dt.strftime("%Y-%m-%d %H:%M:%S.%f")
-                cursor.execute(sql, (param,))
+                cursor.execute(sql, (cutoff_dt,))
             else:
                 sql = self._get_query("query_telemetry_history", "all")
                 cursor.execute(sql)
@@ -92,24 +91,20 @@ class SensorTelemetryReader:
     ) -> Generator[List[Dict[str, Any]], None, None]:
         """
         Streams batches of sensor telemetry using a named server-side cursor (PostgreSQL)
-        or fetchmany (SQLite) to avoid RAM Out-of-Memory (OOM) errors.
+        to avoid RAM Out-of-Memory (OOM) errors.
         Falls back to synapse_sensor_hourly_summary if raw table is empty.
         """
         conn = self.engine.get_connection()
         if not conn:
             return
         try:
-            if self.engine.db_type == "postgres":
-                cursor = conn.cursor(name='synapse_server_cursor')
-                cursor.itersize = batch_size
-            else:
-                cursor = conn.cursor()
+            cursor = conn.cursor(name='synapse_server_cursor')
+            cursor.itersize = batch_size
 
             if limit_seconds is not None:
                 cutoff_dt = datetime.now() - timedelta(seconds=limit_seconds)
                 sql = self._get_query("query_telemetry_history")
-                param = cutoff_dt if self.engine.db_type == "postgres" else cutoff_dt.strftime("%Y-%m-%d %H:%M:%S.%f")
-                cursor.execute(sql, (param,))
+                cursor.execute(sql, (cutoff_dt,))
             else:
                 sql = self._get_query("query_telemetry_history", "all")
                 cursor.execute(sql)
@@ -125,7 +120,7 @@ class SensorTelemetryReader:
             # Fallback to hourly summary if raw table had no rows
             if not has_data:
                 logger.info("[SensorTelemetryReader] synapse_sensor_telemetry_raw is empty. Falling back to hourly summary.")
-                if self.engine.db_type == "postgres" and hasattr(cursor, 'close'):
+                if hasattr(cursor, 'close'):
                     try:
                         cursor.close()
                     except Exception:
@@ -134,8 +129,7 @@ class SensorTelemetryReader:
                 if limit_seconds is not None:
                     cutoff_dt = datetime.now() - timedelta(seconds=limit_seconds)
                     query = self._get_query("fallback_history_batches")
-                    param = cutoff_dt if self.engine.db_type == "postgres" else cutoff_dt.strftime("%Y-%m-%d %H:%M:%S.%f")
-                    cursor.execute(query, (param,))
+                    cursor.execute(query, (cutoff_dt,))
                 else:
                     query = self._get_query("fallback_history_batches", "all")
                     cursor.execute(query)
@@ -153,7 +147,7 @@ class SensorTelemetryReader:
 
     def query_aggregated_telemetry(self, limit_seconds: Optional[int] = None) -> List[Dict[str, Any]]:
         """
-        Executes a Pushdown Aggregation Query directly on PostgreSQL/SQLite (GROUP BY sensor_int_id).
+        Executes a Pushdown Aggregation Query directly on PostgreSQL (GROUP BY sensor_int_id).
         """
         conn = self.engine.get_connection()
         if not conn:
@@ -163,10 +157,9 @@ class SensorTelemetryReader:
             if limit_seconds is not None:
                 cutoff_dt = datetime.now() - timedelta(seconds=limit_seconds)
                 sql = self._get_query("query_telemetry_aggregated")
-                param = cutoff_dt if self.engine.db_type == "postgres" else cutoff_dt.strftime("%Y-%m-%d %H:%M:%S.%f")
-                cursor.execute(sql, (param,))
+                cursor.execute(sql, (cutoff_dt,))
             else:
-                sql = self._get_query("query_telemetry_aggregated", "postgres_all" if self.engine.db_type == "postgres" else "sqlite_all")
+                sql = self._get_query("query_telemetry_aggregated", "postgres_all")
                 cursor.execute(sql)
 
             return [dict(zip(self.AGGREGATED_COLUMNS, row)) for row in cursor.fetchall()]

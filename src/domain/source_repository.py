@@ -108,6 +108,14 @@ class SourceRepository(ISourceRepository):
                 return element_id
         return None
 
+    def get_elements_for_source(self, source_id: str) -> List[str]:
+        """Find all map elements associated with a given source ID (supporting multi-channel sensors)."""
+        elements = []
+        for element_id, sources in self._associations.items():
+            if source_id in sources:
+                elements.append(element_id)
+        return elements
+
     def toggle_origin(self, source_id: str) -> Optional[bool]:
         """Toggle a source between Local and Global scope."""
         source = self.get(source_id)

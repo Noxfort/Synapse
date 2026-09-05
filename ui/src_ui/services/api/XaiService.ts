@@ -19,6 +19,7 @@
 // Date: 2026-08-29
 
 import { ITransportClient, getTransportClient } from '../transport';
+import { OfficialReportData } from '../../types/report';
 
 export class XaiService {
   constructor(private transport: ITransportClient = getTransportClient()) {}
@@ -33,6 +34,15 @@ export class XaiService {
 
   async explainLocal(nodeId: string): Promise<{ success: boolean; message?: string }> {
     return await this.transport.invoke('explain_local', { node_id: nodeId });
+  }
+
+  async generateOfficialReport(params?: Record<string, any>): Promise<{
+    success: boolean;
+    report: OfficialReportData;
+    formatted_markdown?: string;
+    error?: string;
+  }> {
+    return await this.transport.invoke('generate_official_report', params || {});
   }
 }
 

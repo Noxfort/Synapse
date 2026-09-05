@@ -46,7 +46,7 @@ class TelemetryMaintenance:
         q_obj = self._queries.get(query_key, {})
         if isinstance(q_obj, str):
             return q_obj
-        return q_obj.get(self.engine.db_type, q_obj.get("sqlite", ""))
+        return q_obj.get("postgres", q_obj.get(self.engine.db_type, ""))
 
     def consolidate_and_purge_old_data(self, keep_hours: int = 48, batch_days: int = 1):
         """
@@ -58,47 +58,49 @@ class TelemetryMaintenance:
             return
         try:
             cursor = conn.cursor()
-            if self.engine.db_type == "postgres":
-                sql_min = self._get_query("get_min_collected_before")
-                cursor.execute(sql_min, (keep_hours,))
-                row = cursor.fetchone()
-                if not row or not row[0]:
-                    return
-                min_ts = row[0]
+            sql_min = self._get_query("get_min_collected_before")
+            cursor.execute(sql_min, (keep_hours,))
+            row = cursor.fetchone()
+            if not row or not row[0]:
+                return
+            min_ts = row[0]
 
-                sql_cutoff = self._get_query("get_cutoff_timestamp_interval")
-                cursor.execute(sql_cutoff, (keep_hours,))
-                cutoff_ts = cursor.fetchone()[0]
+            sql_cutoff = self._get_query("get_cutoff_timestamp_interval")
+            cursor.execute(sql_cutoff, (keep_hours,))
+            cutoff_ts = cursor.fetchone()[0]
 
-                sql_next_batch = self._get_query("get_next_batch_timestamp")
-                sql_consolidate = self._get_query("consolidate_sensor_hourly_summary")
-                sql_purge = self._get_query("purge_consolidated_window")
+            sql_next_batch = self._get_query("get_next_batch_timestamp")
+            sql_consolidate = self._get_query("consolidate_sensor_hourly_summary")
+            sql_purge = self._get_query("purge_consolidated_window")
 
-                current_start = min_ts
-                while current_start < cutoff_ts:
-                    cursor.execute(sql_next_batch, (current_start, batch_days))
-                    current_end = min(cursor.fetchone()[0], cutoff_ts)
+            current_start = min_ts
+            while current_start < cutoff_ts:
+                cursor.execute(sql_next_batch, (current_start, batch_days))
+                current_end = min(cursor.fetchone()[0], cutoff_ts)
 
-                    # 1. Consolidate into Hourly Summary
-                    cursor.execute(sql_consolidate, (current_start, current_end))
+                # 1. Consolidate into Hourly Summary
+                cursor.execute(sql_consolidate, (current_start, current_end))
 
-                    # 2. Purge raw rows for this window
-                    cursor.execute(sql_purge, (current_start, current_end))
-                    conn.commit()
-                    logger.info(f"[TelemetryMaintenance] Consolidated & purged telemetry window {current_start} to {current_end}.")
-
-                    if current_end >= cutoff_ts:
-                        break
-                    current_start = current_end
-            else:
-                sql_consolidate = self._get_query("consolidate_sensor_hourly_summary")
-                sql_purge = self._get_query("purge_consolidated_window")
-
-                param = f"-{keep_hours}"
-                cursor.execute(sql_consolidate, (param,))
-                cursor.execute(sql_purge, (param,))
+                # 2. Purge raw rows for this window
+                cursor.execute(sql_purge, (current_start, current_end))
                 conn.commit()
-                logger.info(f"[TelemetryMaintenance] Consolidated & purged SQLite telemetry older than {keep_hours}h.")
+                logger.info(f"[TelemetryMaintenance] Consolidated & purged telemetry window {current_start} to {current_end}.")
+
+                if current_end >= cutoff_ts:
+                    break
+                current_start = current_end
+
+            # 3. Post-purge anti-bloat maintenance (VACUUM ANALYZE)
+            if self.engine.db_type == "postgres":
+                try:
+                    conn.commit()
+                    old_autocommit = getattr(conn, "autocommit", False)
+                    conn.autocommit = True
+                    cursor.execute("VACUUM ANALYZE synapse_sensor_telemetry_raw;")
+                    conn.autocommit = old_autocommit
+                    logger.info("[TelemetryMaintenance] Executed VACUUM ANALYZE on synapse_sensor_telemetry_raw.")
+                except Exception as ve:
+                    logger.debug(f"[TelemetryMaintenance] VACUUM ANALYZE notice: {ve}")
         except Exception as e:
             logger.error(f"[TelemetryMaintenance] Error during consolidation & purge: {e}")
             try:

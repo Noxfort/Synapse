@@ -69,11 +69,15 @@ class TelemetryService(ITelemetryService):
 
     def report_error(self, message: str) -> None:
         """Dispatches a critical software incident through the monitor client."""
+        self.report_incident(category="SOFTWARE", level="CRITICAL", message=message)
+
+    def report_incident(self, category: str, level: str, message: str) -> None:
+        """Dispatches an incident report through the monitor client."""
         if self._monitor_client and self._monitor_client.enabled:
             try:
-                self._monitor_client.report_incident(category="SOFTWARE", level="CRITICAL", message=message)
+                self._monitor_client.report_incident(category=category, level=level, message=message)
             except Exception as e:
-                logger.error(f"[TelemetryService] Error reporting critical incident: {e}")
+                logger.error(f"[TelemetryService] Error reporting incident: {e}")
 
     def report_shutdown(self) -> None:
         """

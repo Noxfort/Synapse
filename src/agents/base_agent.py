@@ -55,7 +55,8 @@ class BaseAgent(nn.Module, ABC, IAgent):
         if model is not None and model is not self:
             self._external_model = model
             # Registra como submódulo para que .to() funcione automaticamente
-            self.add_module("_external_model_ref", model)
+            if isinstance(model, nn.Module):
+                self.add_module("_external_model_ref", model)
         else:
             self._external_model = None
 

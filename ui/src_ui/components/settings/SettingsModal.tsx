@@ -20,11 +20,13 @@
 
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, Globe, Database, Radio, Sliders, Landmark } from 'lucide-react';
+import { X, Globe, Database, Radio, Sliders, Landmark, UserCheck, History } from 'lucide-react';
 import { DatabaseSettingsTab } from './tabs/DatabaseSettingsTab';
 import { MonitorSettingsTab } from './tabs/MonitorSettingsTab';
 import { GeneralSettingsTab } from './tabs/GeneralSettingsTab';
 import { MunicipalSettingsTab } from './tabs/MunicipalSettingsTab';
+import { AccountSettingsTab } from './tabs/AccountSettingsTab';
+import { AuditLogTab } from './tabs/AuditLogTab';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -33,7 +35,7 @@ interface SettingsModalProps {
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
   const { t } = useTranslation();
-  const [activeTab, setActiveTab] = useState<'municipal' | 'db' | 'monitor' | 'general'>('municipal');
+  const [activeTab, setActiveTab] = useState<'municipal' | 'db' | 'monitor' | 'general' | 'accounts' | 'audit'>('municipal');
 
   if (!isOpen) return null;
 
@@ -103,6 +105,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
             <Globe className="w-4 h-4" />
             <span>Geral & Tema</span>
           </button>
+
+          <button
+            onClick={() => setActiveTab('accounts')}
+            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 shrink-0 ${
+              activeTab === 'accounts'
+                ? 'bg-primary-600 text-white shadow-md shadow-primary-600/20'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-surfaceHover'
+            }`}
+          >
+            <UserCheck className="w-4 h-4" />
+            <span>Contas & Segurança</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('audit')}
+            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 shrink-0 ${
+              activeTab === 'audit'
+                ? 'bg-primary-600 text-white shadow-md shadow-primary-600/20'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-surfaceHover'
+            }`}
+          >
+            <History className="w-4 h-4" />
+            <span>Auditoria & Logs</span>
+          </button>
         </div>
 
         {/* Tab Content */}
@@ -111,6 +137,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
           {activeTab === 'db' && <DatabaseSettingsTab />}
           {activeTab === 'monitor' && <MonitorSettingsTab />}
           {activeTab === 'general' && <GeneralSettingsTab />}
+          {activeTab === 'accounts' && <AccountSettingsTab />}
+          {activeTab === 'audit' && <AuditLogTab />}
         </div>
       </div>
     </div>

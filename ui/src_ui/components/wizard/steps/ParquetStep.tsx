@@ -32,6 +32,7 @@ export const ParquetStep: React.FC = () => {
   const [parquetPath, setParquetPath] = useState('');
   const [subStep, setSubStep] = useState<'SELECT' | 'INSPECTED' | 'IMPORTING'>('SELECT');
   const [isLoading, setIsLoading] = useState(false);
+  const [isBrowsing, setIsBrowsing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const isValidParquetExtension = (path: string) => {
@@ -39,6 +40,8 @@ export const ParquetStep: React.FC = () => {
   };
 
   const handleBrowseFile = async () => {
+    if (isBrowsing) return;
+    setIsBrowsing(true);
     setError(null);
     try {
       const res = await systemService.pickFile({
@@ -53,13 +56,11 @@ export const ParquetStep: React.FC = () => {
           return;
         }
         setParquetPath(res.path);
-      } else if (res?.cancelled) {
-        // User closed or cancelled dialog
-      } else {
-        fileInputRef.current?.click();
       }
-    } catch {
-      fileInputRef.current?.click();
+    } catch (err) {
+      console.warn('[ParquetStep] Falha ao invocar seletor de arquivos:', err);
+    } finally {
+      setIsBrowsing(false);
     }
   };
 
@@ -154,11 +155,16 @@ export const ParquetStep: React.FC = () => {
               <button
                 type="button"
                 onClick={handleBrowseFile}
-                title={t('wizard.browseTooltip')}
-                className="h-10 px-3.5 bg-surface border border-border hover:border-accent-cyan text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all shadow-sm group"
+                disabled={isBrowsing}
+                title={isBrowsing ? 'Abrindo seletor de arquivos...' : t('wizard.browseTooltip')}
+                className={`h-10 px-3.5 bg-surface border border-border text-slate-700 dark:text-slate-300 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all shadow-sm group ${
+                  isBrowsing
+                    ? 'opacity-50 cursor-not-allowed'
+                    : 'hover:border-accent-cyan hover:text-slate-900 dark:hover:text-white'
+                }`}
               >
-                <FolderOpen className="w-4 h-4 text-accent-cyan group-hover:scale-110 transition-transform" />
-                <span>{t('wizard.browse')}</span>
+                <FolderOpen className={`w-4 h-4 text-accent-cyan ${isBrowsing ? 'animate-pulse' : 'group-hover:scale-110'} transition-transform`} />
+                <span>{isBrowsing ? 'Aguarde...' : t('wizard.browse')}</span>
               </button>
               <button
                 onClick={handleInspect}

@@ -30,7 +30,7 @@ import {
 } from 'lucide-react';
 import { XaiResultItem } from '../../types/xai';
 import { IReportBuilder, IReportExportService, OfficialReportData } from '../../types/report';
-import { useSensorsStore } from '../../stores';
+import { useSensorsStore, useReportStore } from '../../stores';
 import { useReportTypographyStore } from '../../stores/useReportTypographyStore';
 import { defaultReportBuilder } from '../../services/report/reportBuilder';
 import { defaultReportExportService } from '../../services/report/reportExportService';
@@ -68,15 +68,17 @@ export const XaiOfficialReportModal: React.FC<XaiOfficialReportModalProps> = ({
   const [exportingDocx, setExportingDocx] = useState(false);
   const [showFormatControls, setShowFormatControls] = useState(false);
   const sources = useSensorsStore((s) => s.sources);
+  const { isLoadingReport, selectedReport } = useReportStore();
 
   // Typography Preferences from Store
   const { fontFamily, fontSize, lineSpacing, alignment } = useReportTypographyStore();
 
-  // Build Domain Model (Delegated to IReportBuilder abstraction)
+  // Build Domain Model (Consumes Backend DTO with fallback to reportBuilder)
   const reportData = useMemo<OfficialReportData>(() => {
     if (savedReport) return savedReport;
+    if (selectedReport) return selectedReport;
     return reportBuilder.build(result, sources);
-  }, [savedReport, result, sources, reportBuilder]);
+  }, [savedReport, selectedReport, result, sources, reportBuilder]);
 
   if (!isOpen) return null;
 
@@ -206,58 +208,72 @@ export const XaiOfficialReportModal: React.FC<XaiOfficialReportModalProps> = ({
 
         {/* Conteúdo do Laudo com as 6 Folhas ABNT e Estilos Tipográficos Dinâmicos */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 bg-slate-300 dark:bg-slate-950/70">
-          <div
-            id="official-traffic-audit-dossier"
-            className="space-y-6 transition-all duration-150"
-            style={{
-              fontFamily: previewFontFamily,
-              textAlign: previewTextAlign as any,
-              lineHeight: previewLineHeight,
-              fontSize: `${fontSize}pt`,
-            }}
-          >
-            {/* Folha 1: Timbre, Autuação e PARTE I (Sumário Executivo e Quadro Comparativo) */}
-            <Page1ExecutiveSummary
-              report={reportData}
-              pageNumber={1}
-              totalPages={TOTAL_PAGES}
-            />
+          {isLoadingReport ? (
+            <div className="flex flex-col items-center justify-center min-h-[400px] p-12 space-y-4 text-center">
+              <Loader2 className="w-10 h-10 text-emerald-500 animate-spin" />
+              <div className="space-y-1">
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  Compilando Laudo Pericial de Tráfego no Backend...
+                </h3>
+                <p className="text-xs text-slate-600 dark:text-slate-400 max-w-md">
+                  O SYNAPSE Core está sintetizando telemetrias da malha, verificando guardrails do CONTRAN e formatando o parecer pericial conforme a norma ABNT NBR 10719.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div
+              id="official-traffic-audit-dossier"
+              className="space-y-6 transition-all duration-150"
+              style={{
+                fontFamily: previewFontFamily,
+                textAlign: previewTextAlign as any,
+                lineHeight: previewLineHeight,
+                fontSize: `${fontSize}pt`,
+              }}
+            >
+              {/* Folha 1: Timbre, Autuação e PARTE I (Sumário Executivo e Quadro Comparativo) */}
+              <Page1ExecutiveSummary
+                report={reportData}
+                pageNumber={1}
+                totalPages={TOTAL_PAGES}
+              />
 
-            {/* Folha 2: PARTE II (Objeto, Diagnóstico de Tráfego, Panorama HCM e Tabela de Detectores) */}
-            <Page2TechnicalAudit
-              report={reportData}
-              pageNumber={2}
-              totalPages={TOTAL_PAGES}
-            />
+              {/* Folha 2: PARTE II (Objeto, Diagnóstico de Tráfego, Panorama HCM e Tabela de Detectores) */}
+              <Page2TechnicalAudit
+                report={reportData}
+                pageNumber={2}
+                totalPages={TOTAL_PAGES}
+              />
 
-            {/* Folha 3: Guardrails CONTRAN e Atribuição Causal de Tráfego */}
-            <Page3SafetyAndAttribution
-              report={reportData}
-              pageNumber={3}
-              totalPages={TOTAL_PAGES}
-            />
+              {/* Folha 3: Guardrails CONTRAN e Atribuição Causal de Tráfego */}
+              <Page3SafetyAndAttribution
+                report={reportData}
+                pageNumber={3}
+                totalPages={TOTAL_PAGES}
+              />
 
-            {/* Folha 4: Memorial de Cálculo Matemático e Análise Contrafactual */}
-            <Page4FormulasAndCounterfactual
-              report={reportData}
-              pageNumber={4}
-              totalPages={TOTAL_PAGES}
-            />
+              {/* Folha 4: Memorial de Cálculo Matemático e Análise Contrafactual */}
+              <Page4FormulasAndCounterfactual
+                report={reportData}
+                pageNumber={4}
+                totalPages={TOTAL_PAGES}
+              />
 
-            {/* Folha 5: Resposta aos Quesitos Técnicos e Enquadramento Normativo */}
-            <Page5QuesitosAndLegal
-              report={reportData}
-              pageNumber={5}
-              totalPages={TOTAL_PAGES}
-            />
+              {/* Folha 5: Resposta aos Quesitos Técnicos e Enquadramento Normativo */}
+              <Page5QuesitosAndLegal
+                report={reportData}
+                pageNumber={5}
+                totalPages={TOTAL_PAGES}
+              />
 
-            {/* Folha 6: Parecer Conclusivo, Assinaturas Oficiais e Referências Bibliográficas */}
-            <Page6SignaturesAndReferences
-              report={reportData}
-              pageNumber={6}
-              totalPages={TOTAL_PAGES}
-            />
-          </div>
+              {/* Folha 6: Parecer Conclusivo, Assinaturas Oficiais e Referências Bibliográficas */}
+              <Page6SignaturesAndReferences
+                report={reportData}
+                pageNumber={6}
+                totalPages={TOTAL_PAGES}
+              />
+            </div>
+          )}
         </div>
 
       </div>

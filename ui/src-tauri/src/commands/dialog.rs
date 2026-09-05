@@ -20,6 +20,30 @@
 
 use std::fs;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static IS_DIALOG_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+struct DialogGuard;
+
+impl DialogGuard {
+    fn try_acquire() -> Option<Self> {
+        if IS_DIALOG_ACTIVE
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            Some(DialogGuard)
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for DialogGuard {
+    fn drop(&mut self) {
+        IS_DIALOG_ACTIVE.store(false, Ordering::SeqCst);
+    }
+}
 
 #[tauri::command]
 pub async fn pick_file_dialog(
@@ -27,6 +51,14 @@ pub async fn pick_file_dialog(
     filter_name: Option<String>,
     filter_extensions: Option<Vec<String>>,
 ) -> Result<Option<String>, String> {
+    let _guard = match DialogGuard::try_acquire() {
+        Some(g) => g,
+        None => {
+            eprintln!("[Tauri] pick_file_dialog ignorado: um diálogo de arquivo já está ativo.");
+            return Ok(None);
+        }
+    };
+
     tokio::task::spawn_blocking(move || {
         let mut cmd = Command::new("zenity");
         cmd.arg("--file-selection");
@@ -69,6 +101,13 @@ pub async fn save_file_dialog(
     filter_name: Option<String>,
     filter_extensions: Option<Vec<String>>,
 ) -> Result<Option<String>, String> {
+    let _guard = match DialogGuard::try_acquire() {
+        Some(g) => g,
+        None => {
+            eprintln!("[Tauri] save_file_dialog ignorado: um diálogo de arquivo já está ativo.");
+            return Ok(None);
+        }
+    };
     tokio::task::spawn_blocking(move || {
         let mut cmd = Command::new("zenity");
         cmd.arg("--file-selection");

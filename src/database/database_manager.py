@@ -250,6 +250,8 @@ class DatabaseManager:
     # =========================================================================
 
     def stop(self):
-        """Stops the telemetry background worker and flushes any pending samples."""
+        """Stops the telemetry background worker and releases database connection pool."""
         if hasattr(self, 'telemetry_worker') and self.telemetry_worker:
             self.telemetry_worker.stop()
+        if hasattr(self, 'engine') and self.engine:
+            self.engine.close()

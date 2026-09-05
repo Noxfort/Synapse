@@ -94,6 +94,11 @@ class SpecialistAgent(BaseAgent, PBTMixin):
         self.semantic_type: Optional[str] = None
         self.inferred_unit: Optional[str] = None
 
+        # Directional Orientation attached by the CompassAgent
+        self.orientation_vector: Optional[Any] = None
+        self.target_edge_id: Optional[str] = None
+        self.channel_key: Optional[str] = None
+
         # PBT Metrics
         self.running_loss = 0.0
         self.steps = 0
@@ -111,6 +116,21 @@ class SpecialistAgent(BaseAgent, PBTMixin):
         self.extractor = extractor
         self.semantic_type = semantic_type
         self.inferred_unit = unit
+        return self
+
+    def set_orientation(
+        self,
+        vector: Optional[Any] = None,
+        edge_id: Optional[str] = None,
+        channel_key: Optional[str] = None
+    ) -> 'SpecialistAgent':
+        """
+        Attaches the directional orientation taught by the CompassAgent,
+        enabling this local TCN to align its temporal embeddings with the directed road graph.
+        """
+        self.orientation_vector = vector
+        self.target_edge_id = edge_id
+        self.channel_key = channel_key
         return self
 
     @property

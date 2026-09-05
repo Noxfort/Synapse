@@ -20,7 +20,7 @@
 
 import json
 import os
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from src.domain.entities import DataSource, SourceType, SourceStatus
 from src.interfaces.sources import ISourceStorage
 from src.utils.logging_setup import get_logger
@@ -42,8 +42,27 @@ class JsonSourceStorage(ISourceStorage):
             docs = os.path.join(home, "Documents")
         return os.path.join(docs, "Synapse", "config", "sources.json")
 
-    def __init__(self, file_path: Optional[str] = None):
+    def __init__(self, file_path: Optional[str] = None, engine: Optional[Any] = None):
         self.file_path = file_path or self.get_default_path()
+        if engine is not None:
+            self.engine = engine
+        else:
+            try:
+                from src.database.db_engine import DatabaseEngine
+                self.engine = DatabaseEngine()
+            except Exception:
+                self.engine = None
+
+    def _resolve_base_dir(self) -> str:
+        abspath = os.path.abspath(self.file_path)
+        parts = abspath.split(os.sep)
+        if "Synapse" in parts:
+            syn_idx = len(parts) - 1 - parts[::-1].index("Synapse")
+            return os.sep.join(parts[:syn_idx + 1])
+        parent = os.path.dirname(abspath)
+        if os.path.basename(parent) in ("config", "data"):
+            return os.path.dirname(parent)
+        return parent
 
     def serialize_source(self, src: DataSource) -> dict:
         """Convert a DataSource to a JSON-safe dict."""
@@ -100,7 +119,7 @@ class JsonSourceStorage(ISourceStorage):
         associations: Dict[str, List[str]],
         map_path: Optional[str] = None
     ) -> bool:
-        """Persist current sources, associations, and map path to JSON."""
+        """Persist current sources, associations, and map path to JSON and cloud vault."""
         try:
             os.makedirs(os.path.dirname(self.file_path), exist_ok=True)
             payload = {
@@ -113,16 +132,40 @@ class JsonSourceStorage(ISourceStorage):
             }
             with open(self.file_path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2, ensure_ascii=False)
+
+            # Sync with PostgreSQL cloud vault
+            if self.engine:
+                try:
+                    from src.repositories.cloud_vault_repo import CloudVaultRepository
+                    repo = CloudVaultRepository(self.engine)
+                    base_dir = self._resolve_base_dir()
+                    repo.sync_file_to_vault(self.file_path, base_dir)
+                except Exception as dbe:
+                    logger.debug(f"[JsonSourceStorage] Cloud vault sync notice: {dbe}")
+
             return True
         except Exception as e:
             logger.warning(f"[JsonSourceStorage] Failed to save sources: {e}")
             return False
 
     def load(self) -> Tuple[Dict[str, DataSource], Dict[str, List[str]], Optional[str]]:
-        """Restore sources, associations, and map path from JSON (if file exists)."""
+        """Restore sources, associations, and map path from JSON (restoring from cloud vault if missing on disk)."""
         sources: Dict[str, DataSource] = {}
         associations: Dict[str, List[str]] = {}
         map_path: Optional[str] = None
+
+        # If file missing on disk, try to restore from PostgreSQL cloud vault
+        if not os.path.exists(self.file_path) and self.engine:
+            try:
+                from src.repositories.cloud_vault_repo import CloudVaultRepository
+                repo = CloudVaultRepository(self.engine)
+                base_dir = self._resolve_base_dir()
+                rel_path = os.path.relpath(self.file_path, base_dir)
+                if repo.has_file(rel_path):
+                    if repo.restore_file_from_vault(rel_path, self.file_path):
+                        logger.info(f"[JsonSourceStorage] 🌟 Restored '{rel_path}' from PostgreSQL cloud vault.")
+            except Exception as ve:
+                logger.debug(f"[JsonSourceStorage] Cloud vault restore notice: {ve}")
 
         if not os.path.exists(self.file_path):
             return sources, associations, map_path

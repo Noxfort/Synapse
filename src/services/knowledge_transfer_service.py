@@ -18,7 +18,7 @@
 # Author: Gabriel Moraes
 # Date: 2026-08-20
 
-from typing import Any, Optional
+from typing import Any, Optional, Dict
 import numpy as np
 import logging
 from src.interfaces.quarantine import IKnowledgeTransfer
@@ -39,7 +39,9 @@ class KnowledgeTransferService(IKnowledgeTransfer):
         data_series: Optional[np.ndarray] = None,
         extractor: Optional[Any] = None,
         semantic_type: Optional[str] = None,
-        unit: Optional[str] = None
+        unit: Optional[str] = None,
+        orientation_data: Optional[Dict[str, Any]] = None,
+        **kwargs: Any
     ) -> bool:
         """
         Transfers learned representations from source_agent and teaches/calibrates target_agent (TCN).
@@ -51,6 +53,7 @@ class KnowledgeTransferService(IKnowledgeTransfer):
             extractor: Optional SeriesExtractorPipeline attached to the Specialist for autonomous parsing.
             semantic_type: Modality string ("Vehicle Count", "Vehicle Speed", etc.).
             unit: Engineering unit ("vehicles", "km/h", etc.).
+            orientation_data: Optional directional decision dictionary produced by CompassAgent.
             
         Returns:
             bool: True if transfer and TCN initialization succeeded, False otherwise.
@@ -68,6 +71,15 @@ class KnowledgeTransferService(IKnowledgeTransfer):
             if hasattr(target_agent, "set_extractor") and extractor is not None:
                 target_agent.set_extractor(extractor, semantic_type=semantic_type, unit=unit)
                 logger.info(f"🔗 [KnowledgeTransfer] Extrator autônomo e modalidade '{semantic_type}' [{unit}] vinculados à TCN Local.")
+
+            # 2b. Attach Directional Orientation taught by the CompassAgent
+            if hasattr(target_agent, "set_orientation") and orientation_data is not None:
+                vec = orientation_data.get("vector")
+                edge_id = orientation_data.get("primary_edge_id")
+                channels = orientation_data.get("channels", {})
+                ch_key = next(iter(channels.keys())) if channels else None
+                target_agent.set_orientation(vector=vec, edge_id=edge_id, channel_key=ch_key)
+                logger.info(f"🧭 [KnowledgeTransfer] Orientação vetorial {vec} e aresta '{edge_id}' vinculadas ao Especialista.")
 
             # 3. TCN Warmup & Calibration (The "Teaching" Phase)
             if data_series is not None and len(data_series) > 0:

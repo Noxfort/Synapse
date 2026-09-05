@@ -157,6 +157,15 @@ class OptimizerService(QObject):
         try:
             torch.save(final_results, self.checkpoint_file)
             logger.info("[OptimizerService] ✅✅ CHECKPOINT SAVED. Optimization Complete.")
+            try:
+                from src.database.db_engine import DatabaseEngine
+                from src.repositories.cloud_vault_repo import CloudVaultRepository
+                engine = DatabaseEngine()
+                repo = CloudVaultRepository(engine)
+                repo.sync_file_to_vault(self.checkpoint_file, self.base_dir)
+                logger.info("[OptimizerService] ☁️ Checkpoint best_hparams.pth sincronizado no PostgreSQL Cloud Vault.")
+            except Exception as dbe:
+                logger.debug(f"[OptimizerService] Cloud vault sync notice: {dbe}")
             self.optimization_finished.emit()
         except Exception as e:
             logger.error(f"[OptimizerService] ❌ Failed to save checkpoint: {e}")

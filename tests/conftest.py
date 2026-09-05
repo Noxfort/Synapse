@@ -69,3 +69,43 @@ def isolate_sources_json(tmp_path, monkeypatch):
         lambda cls: mock_sources_path
     )
 
+
+@pytest.fixture
+def temp_db_engine():
+    """Provides a fresh isolated DatabaseEngine running PostgreSQL on schema_synapse_test with clean tables."""
+    from src.database.db_engine import DatabaseEngine
+
+    custom_cfg = {
+        "db_type": "postgres",
+        "schema": "schema_synapse_test",
+        "db_schema": "schema_synapse_test",
+    }
+    engine = DatabaseEngine(custom_config=custom_cfg, auto_init=True)
+
+    # Clean tables in test schema for complete test isolation
+    conn = engine.get_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                DO $$ 
+                DECLARE 
+                    r RECORD;
+                BEGIN 
+                    FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'schema_synapse_test') LOOP 
+                        EXECUTE 'TRUNCATE TABLE schema_synapse_test.' || quote_ident(r.tablename) || ' RESTART IDENTITY CASCADE;'; 
+                    END LOOP; 
+                END $$;
+            """)
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        finally:
+            conn.close()
+
+    return engine
+
+

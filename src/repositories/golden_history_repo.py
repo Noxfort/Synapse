@@ -76,47 +76,26 @@ class GoldenHistoryRepository:
 
             logger.info(f"[GoldenHistoryRepo] 🚀 Starting intact Golden ingestion ({len(df)} records, version='{version}')...")
 
-            if self.engine.db_type == "postgres":
-                cursor = conn.cursor()
-                buf = io.StringIO()
-                for _, row in df.iterrows():
-                    s_str = str(row[sensor_col])
-                    s_int = name_to_id.get(s_str, 0)
-                    raw_t = row[time_col]
-                    dt = pd.to_datetime(raw_t, unit='s') if isinstance(raw_t, (int, float)) and raw_t < 1e11 else pd.to_datetime(raw_t)
-                    t_val = str(dt.isoformat())
-                    u_val = float(row[speed_col]) if speed_col else 0.0
-                    q_val = float(row[flow_col]) if flow_col else 0.0
-                    k_val = float(row[occ_col]) if occ_col else 0.0
-                    buf.write(f"{version}\t{s_str}\t{s_int}\t{t_val}\t{q_val}\t{u_val}\t{k_val}\n")
-                
-                buf.seek(0)
-                cursor.copy_from(
-                    buf,
-                    "synapse_golden_history",
-                    columns=("version", "sensor_str_id", "sensor_int_id", "timestamp_val", "flow_rate", "speed", "occupancy")
-                )
-                conn.commit()
-            else:
-                cursor = conn.cursor()
-                rows = []
-                for _, row in df.iterrows():
-                    s_str = str(row[sensor_col])
-                    s_int = name_to_id.get(s_str, 0)
-                    raw_t = row[time_col]
-                    dt = pd.to_datetime(raw_t, unit='s') if isinstance(raw_t, (int, float)) and raw_t < 1e11 else pd.to_datetime(raw_t)
-                    t_val = dt.strftime("%Y-%m-%d %H:%M:%S")
-                    u_val = float(row[speed_col]) if speed_col else 0.0
-                    q_val = float(row[flow_col]) if flow_col else 0.0
-                    k_val = float(row[occ_col]) if occ_col else 0.0
-                    rows.append((version, s_str, s_int, t_val, q_val, u_val, k_val))
-
-                cursor.executemany("""
-                    INSERT INTO synapse_golden_history (
-                        version, sensor_str_id, sensor_int_id, timestamp_val, flow_rate, speed, occupancy
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?);
-                """, rows)
-                conn.commit()
+            cursor = conn.cursor()
+            buf = io.StringIO()
+            for _, row in df.iterrows():
+                s_str = str(row[sensor_col])
+                s_int = name_to_id.get(s_str, 0)
+                raw_t = row[time_col]
+                dt = pd.to_datetime(raw_t, unit='s', utc=True) if isinstance(raw_t, (int, float)) and raw_t < 1e11 else pd.to_datetime(raw_t, utc=True)
+                t_val = str(dt.isoformat())
+                u_val = float(row[speed_col]) if speed_col else 0.0
+                q_val = float(row[flow_col]) if flow_col else 0.0
+                k_val = float(row[occ_col]) if occ_col else 0.0
+                buf.write(f"{version}\t{s_str}\t{s_int}\t{t_val}\t{q_val}\t{u_val}\t{k_val}\n")
+            
+            buf.seek(0)
+            cursor.copy_from(
+                buf,
+                "synapse_golden_history",
+                columns=("version", "sensor_str_id", "sensor_int_id", "timestamp_val", "flow_rate", "speed", "occupancy")
+            )
+            conn.commit()
 
             logger.info(f"[GoldenHistoryRepo] ✅ Successfully ingested Golden Dataset ({len(df)} records) na íntegra.")
             return True
@@ -139,7 +118,7 @@ class GoldenHistoryRepository:
     ) -> Optional[Dict[str, float]]:
         """
         MEH Tier-1 Lookup: Exact match within +/- tolerance_sec.
-        Fast B-tree index scan on (sensor_int_id, timestamp_val).
+        Fast B-tree index scan on (sensor_int_id, timestamp_val) in PostgreSQL.
         """
         sensor_int = self.dictionary_repo.get_or_create(sensor_id)
         if sensor_int == 0:
@@ -149,27 +128,16 @@ class GoldenHistoryRepository:
         if not conn:
             return None
 
-        dt_target = datetime.fromtimestamp(target_timestamp)
         try:
             cursor = conn.cursor()
-            if self.engine.db_type == "postgres":
-                cursor.execute("""
-                    SELECT flow_rate, speed, occupancy, timestamp_val 
-                    FROM synapse_golden_history
-                    WHERE sensor_int_id = %s AND version = %s
-                      AND timestamp_val BETWEEN %s - INTERVAL '%s seconds' AND %s + INTERVAL '%s seconds'
-                    ORDER BY ABS(EXTRACT(EPOCH FROM (timestamp_val - %s))) ASC
-                    LIMIT 1;
-                """, (sensor_int, version, dt_target, tolerance_sec, dt_target, tolerance_sec, dt_target))
-            else:
-                target_epoch = int(target_timestamp)
-                cursor.execute("""
-                    SELECT flow_rate, speed, occupancy, timestamp_val 
-                    FROM synapse_golden_history
-                    WHERE sensor_int_id = ? AND version = ?
-                    ORDER BY ABS(strftime('%s', timestamp_val) - ?) ASC
-                    LIMIT 1;
-                """, (sensor_int, version, target_epoch))
+            cursor.execute("""
+                SELECT flow_rate, speed, occupancy, timestamp_val 
+                FROM synapse_golden_history
+                WHERE sensor_int_id = %s AND version = %s
+                  AND timestamp_val BETWEEN to_timestamp(%s) - (%s * INTERVAL '1 second') AND to_timestamp(%s) + (%s * INTERVAL '1 second')
+                ORDER BY ABS(EXTRACT(EPOCH FROM (timestamp_val - to_timestamp(%s)))) ASC
+                LIMIT 1;
+            """, (sensor_int, version, target_timestamp, tolerance_sec, target_timestamp, tolerance_sec, target_timestamp))
 
             row = cursor.fetchone()
             if row:
@@ -188,7 +156,7 @@ class GoldenHistoryRepository:
         version: str = "v1"
     ) -> Optional[Dict[str, float]]:
         """
-        MEH Tier-3 Lookup: Same Day-of-Week (DOW) and Hour using functional indexes.
+        MEH Tier-3 Lookup: Same Day-of-Week (DOW) and Hour using functional indexes in PostgreSQL.
         """
         sensor_int = self.dictionary_repo.get_or_create(sensor_id)
         if sensor_int == 0:
@@ -204,22 +172,13 @@ class GoldenHistoryRepository:
 
         try:
             cursor = conn.cursor()
-            if self.engine.db_type == "postgres":
-                cursor.execute("""
-                    SELECT AVG(flow_rate), AVG(speed), AVG(occupancy)
-                    FROM synapse_golden_history
-                    WHERE sensor_int_id = %s AND version = %s
-                      AND EXTRACT(DOW FROM timestamp_val) = %s
-                      AND EXTRACT(HOUR FROM timestamp_val) = %s;
-                """, (sensor_int, version, dow, hour))
-            else:
-                cursor.execute("""
-                    SELECT AVG(flow_rate), AVG(speed), AVG(occupancy)
-                    FROM synapse_golden_history
-                    WHERE sensor_int_id = ? AND version = ?
-                      AND CAST(strftime('%w', timestamp_val) AS INTEGER) = ?
-                      AND CAST(strftime('%H', timestamp_val) AS INTEGER) = ?;
-                """, (sensor_int, version, dow, hour))
+            cursor.execute("""
+                SELECT AVG(flow_rate), AVG(speed), AVG(occupancy)
+                FROM synapse_golden_history
+                WHERE sensor_int_id = %s AND version = %s
+                  AND EXTRACT(DOW FROM timestamp_val) = %s
+                  AND EXTRACT(HOUR FROM timestamp_val) = %s;
+            """, (sensor_int, version, dow, hour))
 
             row = cursor.fetchone()
             if row and row[0] is not None:
@@ -245,11 +204,10 @@ class GoldenHistoryRepository:
 
         try:
             cursor = conn.cursor()
-            param = "%s" if self.engine.db_type == "postgres" else "?"
-            cursor.execute(f"""
+            cursor.execute("""
                 SELECT AVG(flow_rate), AVG(speed), AVG(occupancy)
                 FROM synapse_golden_history
-                WHERE sensor_int_id = {param} AND version = {param};
+                WHERE sensor_int_id = %s AND version = %s;
             """, (sensor_int, version))
             row = cursor.fetchone()
             if row and row[0] is not None:

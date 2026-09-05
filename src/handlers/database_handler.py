@@ -145,10 +145,15 @@ class DatabaseCommandHandler:
 
     def handle_test_db_connection(self, msg: IpcMessage, responder: Responder) -> None:
         config = msg.payload.get("config", {})
+        worker = self._worker_factory()
+        if hasattr(worker, "do_check_connection"):
+            try:
+                worker.do_check_connection(config)
+            except Exception:
+                pass
 
         def _run():
             try:
-                worker = self._worker_factory()
                 # Run synchronously — do_check_connection emits a signal,
                 # but we catch the result directly here instead.
                 import psycopg2
@@ -166,13 +171,13 @@ class DatabaseCommandHandler:
 
                 # Persist settings
                 try:
-                    from src.database.db_engine import DatabaseEngine
+                    from src.database.db_settings_manager import DatabaseSettingsManager
                     pg_cfg = dict(config)
                     pg_cfg["db_type"] = "postgres"
                     pg_cfg["schema"] = schema
                     pg_cfg["connected"] = "true"
-                    engine = DatabaseEngine(custom_config=pg_cfg)
-                    engine.save_settings_to_ini(pg_cfg)
+                    settings_mgr = DatabaseSettingsManager()
+                    settings_mgr.save_database_settings(pg_cfg)
                 except Exception:
                     pass
 
@@ -283,41 +288,41 @@ class DatabaseCommandHandler:
 
     def handle_get_database_config(self, msg: IpcMessage, responder: Responder) -> None:
         try:
-            from src.database.db_engine import DatabaseEngine
-            engine = DatabaseEngine()
-            cfg = engine.load_database_settings()
+            from src.database.db_settings_manager import DatabaseSettingsManager
+            settings_mgr = DatabaseSettingsManager()
+            cfg = settings_mgr.load_database_settings()
             responder(True, cfg)
         except Exception as e:
             responder(False, error=str(e))
 
     def handle_disconnect_db(self, msg: IpcMessage, responder: Responder) -> None:
         try:
-            from src.database.db_engine import DatabaseEngine
-            engine = DatabaseEngine()
-            engine.save_settings_to_ini({"connected": "false"})
+            from src.database.db_settings_manager import DatabaseSettingsManager
+            settings_mgr = DatabaseSettingsManager()
+            settings_mgr.save_database_settings({"connected": "false"})
             responder(True, {"message": "Desconectado com sucesso."})
         except Exception as e:
             responder(False, error=str(e))
 
     def handle_get_telemetry_config(self, msg: IpcMessage, responder: Responder) -> None:
         try:
-            from src.database.db_engine import DatabaseEngine
-            engine = DatabaseEngine()
-            cfg = engine.load_telemetry_settings()
+            from src.database.db_settings_manager import DatabaseSettingsManager
+            settings_mgr = DatabaseSettingsManager()
+            cfg = settings_mgr.load_telemetry_settings()
             responder(True, cfg)
         except Exception as e:
             responder(False, error=str(e))
 
     def handle_save_telemetry_config(self, msg: IpcMessage, responder: Responder) -> None:
         try:
-            from src.database.db_engine import DatabaseEngine
-            engine = DatabaseEngine()
+            from src.database.db_settings_manager import DatabaseSettingsManager
+            settings_mgr = DatabaseSettingsManager()
             payload = msg.payload or {}
             ip = payload.get("ip", "localhost")
             host = payload.get("host", "localhost")
             port = int(payload.get("port", 1883))
             connected = bool(payload.get("connected", False))
-            engine.save_telemetry_settings(ip, host, port, connected)
+            settings_mgr.save_telemetry_settings(ip, host, port, connected)
             responder(True, {"message": "Configurações de telemetria salvas com sucesso."})
         except Exception as e:
             responder(False, error=str(e))

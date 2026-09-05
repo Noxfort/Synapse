@@ -39,8 +39,8 @@ The **SYNAPSE UI** is an enterprise-grade desktop application engineered for mun
 │                                  │ Tauri Invoke / Events               │
 │   ┌──────────────────────────────▼───────────────────────────────┐     │
 │   │                      RUST CORE (src-tauri)                   │     │
-│   │  - Process Manager & Sidecar Lifecycle                      │     │
-│   │  - System Tray Integration & Window Constraints             │     │
+│   │  - Process Manager & Sidecar Lifecycle                       │     │
+│   │  - System Tray Integration & Window Constraints              │     │
 │   │  - Stdio Pipe Interceptor (Zero Network Ports)               │     │
 │   └──────────────────────────────┬───────────────────────────────┘     │
 └──────────────────────────────────┼─────────────────────────────────────┘

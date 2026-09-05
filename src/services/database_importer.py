@@ -141,6 +141,14 @@ class DatabaseImporter(QObject):
             self._emit_progress(80)
             shutil.copy2(abs_path, target_path)
 
+            # 4. Sync to PostgreSQL Cloud File Vault
+            if hasattr(self.storage, "sync_file_to_vault"):
+                try:
+                    self.storage.sync_file_to_vault(str(target_path))
+                    self._emit_log("☁️ [ETL] Base histórica sincronizada com o PostgreSQL Cloud Vault.")
+                except Exception as ve:
+                    self.logger.debug(f"[ETL] Cloud vault sync notice: {ve}")
+
             self._emit_log(f"🎉 [ETL] Sucesso! Base salva em: {target_path}")
             self._emit_progress(100)
             self._emit_finished(True, "Import Successful (Parquet Base Registered).")

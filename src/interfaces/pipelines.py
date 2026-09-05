@@ -104,3 +104,16 @@ class IJuristPipeline(IDeviceMovable, Protocol):
     def load_resources(self, device: str = "auto", gpu_layers: int = 16) -> None: ...
     def unload_resources(self) -> None: ...
 
+
+@runtime_checkable
+class ICompassPipeline(IDeviceMovable, Protocol):
+    """Contract for directional reconciliation and orientation pipeline."""
+    def orient_and_reconcile(
+        self,
+        source: Any,
+        candidate_edges: List[Any],
+        data_chunk: Optional[List[Any]] = None,
+        data_np: Optional[Any] = None,
+        semantic_type: Optional[str] = None
+    ) -> Dict[str, Any]: ...
+

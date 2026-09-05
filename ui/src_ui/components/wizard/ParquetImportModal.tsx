@@ -37,6 +37,7 @@ export const ParquetImportModal: React.FC<ParquetImportModalProps> = ({ isOpen, 
   const [filePath, setFilePath] = useState('');
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [isLoading, setIsLoading] = useState(false);
+  const [isBrowsing, setIsBrowsing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   if (!isOpen) return null;
@@ -46,6 +47,8 @@ export const ParquetImportModal: React.FC<ParquetImportModalProps> = ({ isOpen, 
   };
 
   const handleBrowseFile = async () => {
+    if (isBrowsing) return;
+    setIsBrowsing(true);
     setErrorMessage(null);
     try {
       const res = await systemService.pickFile({
@@ -60,13 +63,11 @@ export const ParquetImportModal: React.FC<ParquetImportModalProps> = ({ isOpen, 
           return;
         }
         setFilePath(res.path);
-      } else if (res?.cancelled) {
-        // User closed or cancelled dialog
-      } else {
-        fileInputRef.current?.click();
       }
     } catch {
-      fileInputRef.current?.click();
+      console.warn('[ParquetImportModal] Falha ao invocar seletor de arquivos.');
+    } finally {
+      setIsBrowsing(false);
     }
   };
 
@@ -178,11 +179,16 @@ export const ParquetImportModal: React.FC<ParquetImportModalProps> = ({ isOpen, 
                 <button
                   type="button"
                   onClick={handleBrowseFile}
-                  title={t('wizard.browseTooltip')}
-                  className="h-10 px-3.5 bg-surface border border-border hover:border-accent-cyan text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all shadow-sm group"
+                  disabled={isBrowsing}
+                  title={isBrowsing ? 'Abrindo seletor de arquivos...' : t('wizard.browseTooltip')}
+                  className={`h-10 px-3.5 bg-surface border border-border text-slate-700 dark:text-slate-300 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all shadow-sm group ${
+                    isBrowsing
+                      ? 'opacity-50 cursor-not-allowed'
+                      : 'hover:border-accent-cyan hover:text-slate-900 dark:hover:text-white'
+                  }`}
                 >
-                  <FolderOpen className="w-4 h-4 text-accent-cyan group-hover:scale-110 transition-transform" />
-                  <span>{t('wizard.browse')}</span>
+                  <FolderOpen className={`w-4 h-4 text-accent-cyan ${isBrowsing ? 'animate-pulse' : 'group-hover:scale-110'} transition-transform`} />
+                  <span>{isBrowsing ? 'Aguarde...' : t('wizard.browse')}</span>
                 </button>
               </div>
             </div>

@@ -26,7 +26,7 @@ and local/global scope toggling.
 """
 
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from src.ipc.ipc_protocol import IpcMessage
 from src.domain.entities import DataSource, SourceType, SourceStatus
@@ -35,8 +35,22 @@ from src.domain.entities import DataSource, SourceType, SourceStatus
 class SourceCommandHandler:
     """Handles data source registration, association, and scope toggling."""
 
-    def __init__(self, app_state: Any):
+    def __init__(
+        self,
+        app_state: Any,
+        security_manager: Optional[Any] = None,
+        audit_logger: Optional[Any] = None,
+        telemetry_service: Optional[Any] = None,
+    ):
         self.app_state = app_state
+        self.security_manager = security_manager
+        self.audit_logger = audit_logger
+        self.telemetry_service = telemetry_service
+
+    def _get_current_user(self) -> str:
+        if self.security_manager and hasattr(self.security_manager, "last_auth_user"):
+            return self.security_manager.last_auth_user or "SYSTEM"
+        return "SYSTEM"
 
     def handle_get_sources(self, msg: IpcMessage) -> Dict[str, Any]:
         sources_list = []
@@ -70,7 +84,15 @@ class SourceCommandHandler:
         name = payload.get("name", "New Source")
         is_local = payload.get("is_local", True)
         conn = payload.get("connection", "")
-        stype = SourceType.API if not is_local else SourceType.MQTT
+        raw_stype = payload.get("source_type")
+        if raw_stype and raw_stype.upper() in SourceType.__members__:
+            stype = SourceType[raw_stype.upper()]
+        elif raw_stype and any(raw_stype.lower() == st.value.lower() for st in SourceType):
+            stype = next(st for st in SourceType if raw_stype.lower() == st.value.lower())
+        elif conn.lower().endswith(".parquet"):
+            stype = SourceType.PARQUET
+        else:
+            stype = SourceType.API if not is_local else SourceType.MQTT
         src_id = payload.get("id") or f"src_{int(os.urandom(4).hex(), 16)}"
 
         src = DataSource(
@@ -79,10 +101,16 @@ class SourceCommandHandler:
             is_local=is_local,
             source_type=stype,
             connection_string=conn,
-            status=SourceStatus.QUARANTINE,
+            status=SourceStatus.ACTIVE if stype == SourceType.PARQUET else SourceStatus.QUARANTINE,
         )
         self.app_state.add_data_source(src)
-        return {"id": src.id, "name": src.name, "is_local": src.is_local}
+        if self.audit_logger:
+            self.audit_logger.log_action(
+                self._get_current_user(),
+                "ADD_SENSOR",
+                f"Sensor '{src.name}' ({src.id}) cadastrado como {stype.value}"
+            )
+        return {"id": src.id, "name": src.name, "is_local": src.is_local, "source_type": stype.value}
 
     def handle_associate_source(self, msg: IpcMessage) -> Dict[str, Any]:
         source_id = msg.payload.get("source_id")
@@ -109,7 +137,21 @@ class SourceCommandHandler:
         return {"source_id": sid}
 
     def handle_remove_source(self, msg: IpcMessage) -> Dict[str, Any]:
+        if self.security_manager and self.security_manager.is_lockdown():
+            raise RuntimeError("Operação bloqueada. O sistema está em estado de LOCKDOWN.")
         sid = msg.payload.get("source_id")
         if sid and hasattr(self.app_state, "remove_data_source"):
             self.app_state.remove_data_source(sid)
+            if self.audit_logger:
+                self.audit_logger.log_action(
+                    self._get_current_user(),
+                    "REMOVE_SENSOR",
+                    f"Sensor removido: {sid}"
+                )
+            if self.telemetry_service:
+                self.telemetry_service.report_incident(
+                    "SOFTWARE",
+                    "WARNING",
+                    f"Sensor removido do sistema: {sid}"
+                )
         return {"source_id": sid}

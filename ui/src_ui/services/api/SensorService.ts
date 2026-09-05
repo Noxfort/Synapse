@@ -26,6 +26,7 @@ export interface RegisterSourcePayload {
   name: string;
   is_local: boolean;
   connection?: string;
+  source_type?: string;
 }
 
 export class SensorService {
